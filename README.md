@@ -84,6 +84,16 @@ Claude Code is pointed at a local shim on `127.0.0.1:8788` rather than at Anthro
 | `~/.local/share/claude-dsv4f/` | code, `usage.jsonl` ledger, vision cache |
 | `~/.claude-dsv4f/` | the isolated Claude Code profile |
 
+## Is your vision setup any good?
+
+```bash
+node vision-bench/bench.mjs
+```
+
+Nine locally-generated fixtures covering fine print, low contrast, a photographed form at an
+angle, spatial overlap, orientation and partial occlusion. About a cent and 90 seconds. See
+[vision-bench/README.md](vision-bench/README.md), including how to score your own images.
+
 ## Tests
 
 ```bash

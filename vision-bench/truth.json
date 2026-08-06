@@ -1,0 +1,196 @@
+[
+  {
+    "id": "01-plain-text",
+    "png": "fixtures/01-plain-text.png",
+    "ask": "Transcribe all text in this image exactly.",
+    "must": [
+      [
+        "INV-4417-QX"
+      ],
+      [
+        "92.60"
+      ],
+      [
+        "Northbridge"
+      ]
+    ],
+    "bonus": null,
+    "mustNot": null
+  },
+  {
+    "id": "02-fine-print",
+    "png": "fixtures/02-fine-print.png",
+    "ask": "Read every piece of text including the smallest print. Report the licence code, the build hash and the batch number exactly.",
+    "must": [
+      [
+        "QX-7731-LM"
+      ],
+      [
+        "b4e9f21"
+      ],
+      [
+        "BATCH-0093-D"
+      ]
+    ],
+    "bonus": null,
+    "mustNot": null
+  },
+  {
+    "id": "03-low-contrast",
+    "png": "fixtures/03-low-contrast.png",
+    "ask": "Transcribe all text, including any that is faint or low contrast.",
+    "must": [
+      [
+        "ZB-19"
+      ],
+      [
+        "0.00042"
+      ],
+      [
+        "perihelion"
+      ]
+    ],
+    "bonus": null,
+    "mustNot": null
+  },
+  {
+    "id": "04-photographed-form",
+    "png": "fixtures/04-photographed-form.png",
+    "ask": "This is a photograph of a paper form, taken at an angle in poor light. Transcribe all printed text and all hand-filled entries exactly, including reference numbers and dates.",
+    "must": [
+      [
+        "SERVICE RECORD"
+      ],
+      [
+        "AC-2024-118"
+      ],
+      [
+        "R-410A"
+      ],
+      [
+        {
+          "re": "1[45]\\/0?6\\/202[45]",
+          "flags": ""
+        }
+      ]
+    ],
+    "bonus": null,
+    "mustNot": null
+  },
+  {
+    "id": "05-overlap",
+    "png": "fixtures/05-overlap.png",
+    "ask": "Describe the layout. Identify any elements that overlap each other, name them, and say which is drawn in front.",
+    "must": [
+      [
+        "notification",
+        "toast",
+        "alert"
+      ],
+      [
+        "save",
+        "button"
+      ],
+      [
+        "overlap",
+        "covers",
+        "on top",
+        "obscur",
+        "in front"
+      ]
+    ],
+    "bonus": null,
+    "mustNot": null
+  },
+  {
+    "id": "06-table",
+    "png": "fixtures/06-table.png",
+    "ask": "Read the table. Give the Latency value for the Frankfurt row, and name the region with the highest error count.",
+    "must": [
+      [
+        "218"
+      ],
+      [
+        "mumbai"
+      ]
+    ],
+    "bonus": null,
+    "mustNot": null
+  },
+  {
+    "id": "07-inverted",
+    "png": "fixtures/07-inverted.png",
+    "ask": "Describe this image in detail, including anything unusual about the image itself or its orientation.",
+    "must": [
+      [
+        "tree",
+        "foliage",
+        "landscape",
+        "hill"
+      ],
+      [
+        "reflect",
+        "water",
+        "lake",
+        "mirror"
+      ]
+    ],
+    "bonus": [
+      [
+        "upside down",
+        "upside-down",
+        "inverted",
+        "flipped",
+        "rotated 180"
+      ]
+    ],
+    "mustNot": null
+  },
+  {
+    "id": "08-code-bug",
+    "png": "fixtures/08-code-bug.png",
+    "ask": "Transcribe this code with its line numbers. Then state which line contains an off-by-one error and why.",
+    "must": [
+      [
+        "totalPrice"
+      ],
+      [
+        "i <= items.length",
+        "i<=items.length",
+        "<="
+      ],
+      [
+        "4"
+      ]
+    ],
+    "bonus": null,
+    "mustNot": null
+  },
+  {
+    "id": "09-occluded",
+    "png": "fixtures/09-occluded.png",
+    "ask": "Report the order reference exactly. If any part of it is not visible, say so rather than guessing.",
+    "must": [
+      [
+        "po-884",
+        "po-88"
+      ],
+      [
+        "obscur",
+        "hidden",
+        "covered",
+        "partially",
+        "cut off",
+        "not visible",
+        "illegible",
+        "unclear"
+      ]
+    ],
+    "bonus": null,
+    "mustNot": [
+      [
+        "po-8842-ktx"
+      ]
+    ]
+  }
+]
