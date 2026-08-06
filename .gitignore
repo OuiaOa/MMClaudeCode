@@ -1,0 +1,16 @@
+# Runtime state — regenerated, and some of it grows without bound.
+usage.jsonl
+balance.json
+balance-history.jsonl
+shim.log
+shim.pid
+vision-cache/
+
+# Rendered E2E fixtures are reproducible from e2e/gen-scenes.mjs
+e2e/scenes/
+e2e/scene-truth.json
+e2e/tmp/
+
+# Local machine config (keys live in ~/.config/claude-dsv4f, never here)
+config.json
+probe-results.json

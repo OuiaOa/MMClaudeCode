@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# claude-dsv4f — launch Claude Code against DeepSeek V4 Flash 0731.
+#
+# Uses an isolated CLAUDE_CONFIG_DIR so your normal `claude` (Anthropic subscription,
+# ~/.claude/.credentials.json) is completely untouched.
+
+set -euo pipefail
+
+CONFIG_DIR="${DSV4F_CONFIG_DIR:-$HOME/.config/claude-dsv4f}"
+DATA_DIR="${DSV4F_DATA_DIR:-$HOME/.local/share/claude-dsv4f}"
+PROFILE_DIR="$HOME/.claude-dsv4f"
+
+if [[ ! -s "$CONFIG_DIR/key" ]]; then
+  echo "claude-dsv4f: no API key stored yet." >&2
+  echo "Run this first, in your own terminal:  claude-dsv4f-setup" >&2
+  exit 1
+fi
+if [[ ! -f "$PROFILE_DIR/settings.json" ]]; then
+  echo "claude-dsv4f: profile missing. Run: claude-dsv4f-setup" >&2
+  exit 1
+fi
+
+PORT="$(node -e 'process.stdout.write(String(process.env.DSV4F_PORT || JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port || 8788))' "$CONFIG_DIR/config.json")"
+
+# Make sure the shim is up before handing control to Claude Code.
+if ! curl -sf -m 2 "http://127.0.0.1:$PORT/_dsv4f/health" >/dev/null 2>&1; then
+  if systemctl --user list-unit-files claude-dsv4f-shim.service >/dev/null 2>&1; then
+    echo "claude-dsv4f: starting shim..." >&2
+    systemctl --user start claude-dsv4f-shim.service || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      curl -sf -m 1 "http://127.0.0.1:$PORT/_dsv4f/health" >/dev/null 2>&1 && break
+      sleep 0.3
+    done
+  fi
+fi
+if ! curl -sf -m 2 "http://127.0.0.1:$PORT/_dsv4f/health" >/dev/null 2>&1; then
+  echo "claude-dsv4f: shim is not responding on 127.0.0.1:$PORT" >&2
+  echo "  systemctl --user status claude-dsv4f-shim" >&2
+  echo "  journalctl --user -u claude-dsv4f-shim -n 50" >&2
+  exit 1
+fi
+
+# First run: bring across memories, transcripts and permissions from ~/.claude. Transcripts are
+# scrubbed of thinking signatures and image blocks on the way in, without which they cannot be
+# resumed against DeepSeek. Idempotent — the marker file stops it repeating.
+if [[ ! -f "$PROFILE_DIR/.imported" && -d "$HOME/.claude/projects" ]]; then
+  echo "claude-dsv4f: first run — importing your existing Claude Code state..." >&2
+  if command -v dsv4f-import >/dev/null; then
+    dsv4f-import >&2 || echo "claude-dsv4f: import failed; continuing without it" >&2
+  fi
+fi
+
+export CLAUDE_CONFIG_DIR="$PROFILE_DIR"
+exec claude --settings "$PROFILE_DIR/settings.json" "$@"

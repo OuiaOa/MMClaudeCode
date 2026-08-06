@@ -1,0 +1,244 @@
+#!/usr/bin/env node
+/**
+ * dsv4f-usage — spend, token burn rate and balance for claude-dsv4f.
+ *
+ * DeepSeek has no usage/spend API (its entire surface is chat/responses/FIM/models/balance),
+ * so the ledger written by the shim is the only per-request record. `--reconcile` cross-checks
+ * it against exact balance drawdown, and — when the Anthropic-format usage object omits the
+ * cache hit/miss split — solves for the true cache-hit ratio:
+ *
+ *     drawdown = hit*rHit + miss*rMiss + out*rOut ,  hit + miss = totalInput (known)
+ *
+ * one equation, one unknown.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import http from 'node:http';
+
+const HOME = os.homedir();
+const CONFIG_DIR = process.env.DSV4F_CONFIG_DIR || path.join(HOME, '.config', 'claude-dsv4f');
+const DATA_DIR = process.env.DSV4F_DATA_DIR || path.join(HOME, '.local', 'share', 'claude-dsv4f');
+const LEDGER = path.join(DATA_DIR, 'usage.jsonl');
+const BAL_HIST = path.join(DATA_DIR, 'balance-history.jsonl');
+
+const cfg = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'config.json'), 'utf8'));
+const RATES = cfg.rates[cfg.model];
+
+const args = process.argv.slice(2);
+const has = (f) => args.includes(f);
+const argVal = (f, d) => { const i = args.indexOf(f); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
+
+function readJsonl(file) {
+  try {
+    return fs.readFileSync(file, 'utf8').split('\n')
+      .filter(l => l.startsWith('{'))
+      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch { return []; }
+}
+
+const usd = (n) => `$${n.toFixed(n < 0.01 ? 6 : 4)}`;
+const num = (n) => n.toLocaleString('en-US');
+const bold = (s) => `\x1b[1m${s}\x1b[0m`;
+const dim = (s) => `\x1b[2m${s}\x1b[0m`;
+
+// ------------------------------------------------------------------- probe view
+
+if (has('--probe')) {
+  const p = path.join(CONFIG_DIR, 'probe-results.json');
+  if (!fs.existsSync(p)) {
+    console.log('No probe results. Run: claude-dsv4f-setup --probe');
+    process.exit(1);
+  }
+  const r = JSON.parse(fs.readFileSync(p, 'utf8'));
+  console.log(bold(`\nProbe results (${r.probedAt})\n`));
+  for (const [name, v] of Object.entries(r.probes || {})) {
+    const mark = v.ok === true ? '\x1b[32m✓\x1b[0m' : v.ok === false ? '\x1b[31m✗\x1b[0m' : '\x1b[33m?\x1b[0m';
+    console.log(`  ${mark} ${name.padEnd(26)} ${v.summary}`);
+  }
+  console.log(bold('\nDerived shim configuration\n'));
+  console.log(`  effort field     : ${r.effortField}  (supported=${r.effortSupported})`);
+  console.log(`  cost accounting  : ${r.usageHasCacheFields ? 'EXACT — usage reports the cache split' : 'BOUNDED — run --reconcile to calibrate'}`);
+  console.log(`  xhigh accepted   : ${r.xhighAccepted}  ${r.xhighAccepted ? '' : '(xhigh->max rewrite is required for ultracode)'}`);
+  console.log(`  count_tokens     : ${r.countTokensSupported ? 'proxied' : '404 — Claude Code estimates locally'}`);
+  console.log(`  effort is live   : ${r.effortTakesEffect}`);
+  console.log('');
+  process.exit(0);
+}
+
+// ------------------------------------------------------------------- reconcile
+
+if (has('--reconcile')) {
+  const rows = readJsonl(LEDGER);
+  const bal = readJsonl(BAL_HIST);
+  if (bal.length < 2) {
+    console.log('\nNeed at least two balance samples to reconcile.');
+    console.log('The shim samples on start, ~60s after activity settles, and hourly when idle.');
+    console.log(`Currently have ${bal.length}. Use claude-dsv4f for a while, then retry.\n`);
+    process.exit(0);
+  }
+
+  const currency = bal[bal.length - 1].currency;
+  let toUsd = 1;
+  if (currency !== 'USD') {
+    if (cfg.fx?.usdPerCny && currency === 'CNY') toUsd = cfg.fx.usdPerCny;
+    else {
+      console.log(`\nAccount is denominated in ${currency} but rates are USD.`);
+      console.log(`Set fx.usdPerCny in ${path.join(CONFIG_DIR, 'config.json')} to solve in USD.`);
+      console.log('Reporting native-currency drawdown only.\n');
+      toUsd = null;
+    }
+  }
+
+  console.log(bold('\nReconciliation — ledger estimate vs actual balance drawdown\n'));
+
+  let totIn = 0, totOut = 0, totDraw = 0, totMin = 0, totMax = 0, used = 0;
+  for (let i = 1; i < bal.length; i++) {
+    const a = bal[i - 1], b = bal[i];
+    const draw = a.total - b.total;
+    if (!(draw > 0)) continue;                       // skip top-ups and flat intervals
+    const t0 = Date.parse(a.ts), t1 = Date.parse(b.ts);
+    // DeepSeek rows only: vision rows bill DeepInfra and would contaminate a solve that
+    // compares token counts against DeepSeek balance drawdown.
+    const seg = rows.filter(r => {
+      const t = Date.parse(r.ts);
+      return t > t0 && t <= t1 && (r.provider || 'deepseek') === 'deepseek';
+    });
+    if (!seg.length) continue;                       // drawdown with no local activity: other key
+    const i_ = seg.reduce((s, r) => s + (r.inputTokens || 0), 0);
+    const o_ = seg.reduce((s, r) => s + (r.outputTokens || 0), 0);
+    totIn += i_; totOut += o_; totDraw += draw; used++;
+    totMin += seg.reduce((s, r) => s + (r.costUsdMin || 0), 0);
+    totMax += seg.reduce((s, r) => s + (r.costUsdMax || 0), 0);
+  }
+
+  if (!used) {
+    console.log('  No usable intervals yet (need a drawdown that brackets local activity).\n');
+    process.exit(0);
+  }
+
+  console.log(`  intervals used   : ${used}`);
+  console.log(`  input tokens     : ${num(totIn)}`);
+  console.log(`  output tokens    : ${num(totOut)}`);
+  console.log(`  actual drawdown  : ${totDraw.toFixed(4)} ${currency}`);
+  console.log(`  ledger estimate  : ${usd(totMin)} .. ${usd(totMax)}`);
+
+  if (toUsd !== null) {
+    const drawUsd = totDraw * toUsd;
+    const outCost = (totOut / 1e6) * RATES.output;
+    const inCost = drawUsd - outCost;
+    // inCost = hit*rHit/1e6 + (totIn-hit)*rMiss/1e6
+    const hit = ((inCost * 1e6) - totIn * RATES.cacheMissInput) / (RATES.cacheHitInput - RATES.cacheMissInput);
+    const ratio = totIn > 0 ? Math.max(0, Math.min(1, hit / totIn)) : 0;
+    const effRate = totIn > 0 ? (inCost * 1e6) / totIn : 0;
+
+    console.log(`  actual (USD)     : ${usd(drawUsd)}`);
+    console.log('');
+    console.log(bold('  Derived from actual spend:'));
+    console.log(`    effective input rate : $${effRate.toFixed(4)}/M   ${dim(`(hit $${RATES.cacheHitInput}/M .. miss $${RATES.cacheMissInput}/M)`)}`);
+    console.log(`    implied cache-hit    : ${(ratio * 100).toFixed(1)}%`);
+    if (drawUsd > totMax * 1.5) {
+      console.log(`    \x1b[33mWARNING\x1b[0m: actual spend exceeds the pessimistic estimate by ${(drawUsd / totMax).toFixed(1)}x.`);
+      console.log('             Possible causes: the 2x peak surcharge went live, or another key');
+      console.log('             is drawing on this account. Check peakSurcharge in config.json.');
+    }
+  }
+  console.log('');
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------- usage report
+
+const days = parseInt(argVal('--days', '1'), 10);
+const cutoff = Date.now() - days * 86400000;
+const rows = readJsonl(LEDGER).filter(r => Date.parse(r.ts) >= cutoff);
+
+if (has('--json')) {
+  console.log(JSON.stringify(rows, null, 2));
+  process.exit(0);
+}
+
+const providerOf = (r) => r.provider || 'deepseek';
+const dsRows = rows.filter(r => providerOf(r) === 'deepseek');
+const sum = (f) => dsRows.reduce((s, r) => s + (f(r) || 0), 0);
+const inTok = sum(r => r.inputTokens);
+const outTok = sum(r => r.outputTokens);
+const cMin = sum(r => r.costUsdMin);
+const cMax = sum(r => r.costUsdMax);
+const exact = rows.length > 0 && rows.every(r => r.exact !== false);
+
+console.log(bold(`\nclaude-dsv4f usage — last ${days} day${days === 1 ? '' : 's'}\n`));
+
+if (!rows.length) {
+  console.log('  No requests recorded yet.\n');
+} else {
+  console.log(`  requests       : ${rows.length}`);
+  console.log(`  input tokens   : ${num(inTok)}`);
+  console.log(`  output tokens  : ${num(outTok)}`);
+  console.log(`  cost           : ${exact ? usd(cMax) : `${usd(cMin)} .. ${usd(cMax)}  ${dim('(cache split not reported — run --reconcile)')}`}`);
+
+  const by = (key) => {
+    const m = new Map();
+    for (const r of rows) {
+      const k = r[key] || '?';
+      const e = m.get(k) || { n: 0, in: 0, out: 0, cost: 0 };
+      e.n++; e.in += r.inputTokens || 0; e.out += r.outputTokens || 0; e.cost += r.costUsdMax || 0;
+      m.set(k, e);
+    }
+    return [...m.entries()].sort((a, b) => b[1].cost - a[1].cost);
+  };
+
+  console.log(bold('\n  by slot'));
+  for (const [k, v] of by('slot')) {
+    console.log(`    ${k.padEnd(12)} ${String(v.n).padStart(5)} req  ${num(v.in).padStart(12)} in  ${num(v.out).padStart(10)} out  ${usd(v.cost).padStart(11)}`);
+  }
+  console.log(bold('\n  by effort'));
+  for (const [k, v] of by('effort')) {
+    console.log(`    ${k.padEnd(12)} ${String(v.n).padStart(5)} req  ${num(v.in).padStart(12)} in  ${num(v.out).padStart(10)} out  ${usd(v.cost).padStart(11)}`);
+  }
+
+  const esc = rows.filter(r => r.effort === 'max');
+  if (esc.length) {
+    const why = new Map();
+    for (const r of esc) why.set(r.effortWhy, (why.get(r.effortWhy) || 0) + 1);
+    console.log(bold('\n  max-effort triggers'));
+    for (const [k, v] of [...why.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`    ${String(v).padStart(4)}x  ${k}`);
+    }
+  }
+}
+
+// live shim state
+const port = cfg.port || 8788;
+// The usage endpoint embeds the account balance, so it requires the local sentinel.
+let sentinel = '';
+try { sentinel = fs.readFileSync(path.join(CONFIG_DIR, 'sentinel'), 'utf8').trim(); } catch { /* shim will 401 */ }
+
+http.get({
+  host: '127.0.0.1', port, path: '/_dsv4f/usage', timeout: 2000,
+  headers: { authorization: `Bearer ${sentinel}` },
+}, (res) => {
+  let b = '';
+  res.on('data', d => { b += d; });
+  res.on('end', () => {
+    try {
+      const s = JSON.parse(b);
+      console.log(bold('\n  live'));
+      console.log(`    today          : ${usd(s.todayUsd)} / cap $${s.capUsd.toFixed(2)}`);
+      console.log(`    burn rate      : ${num(s.burn.tokensPerMin)} tok/min   ~$${s.burn.usdPerHour.toFixed(3)}/hr`);
+      if (s.vision?.enabled) {
+        const v = s.vision;
+        const flag = v.capUsd > 0 && v.spentUsd >= v.capUsd ? '  \x1b[31mCAP REACHED\x1b[0m' : '';
+        console.log(`    vision         : ${usd(v.spentUsd)} / cap $${v.capUsd.toFixed(2)}  (${v.calls} image${v.calls === 1 ? '' : 's'}, ${v.model})${flag}`);
+        console.log(dim(`                     DeepInfra publishes no balance API — ledger is the only record`));
+      }
+      const bi = s.balance?.balance_infos?.[0];
+      if (bi) console.log(`    balance        : ${bi.total_balance} ${bi.currency}  ${dim(`(polled ${s.balance._polledAt})`)}`);
+      console.log('');
+    } catch { console.log(''); }
+  });
+}).on('error', () => {
+  console.log(dim('\n  (shim not running — live burn rate and balance unavailable)\n'));
+});
