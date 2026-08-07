@@ -13,6 +13,11 @@
 #   -Bundle           copy Claude Code's binary into the dsv4f install, so the resulting
 #                     setup is self-contained and the resolver prefers the bundled copy
 #   -Update           re-copy files even if the destination already exists
+#
+# NOTE: PowerShell on Windows reads this file with the system codepage by default. UTF-8
+# bytes (em-dashes, etc.) become mojibake and break parsing. The script intentionally uses
+# ASCII-only text so a default `powershell -File .\install.ps1` parses cleanly regardless of
+# the host codepage. If you edit this file, avoid non-ASCII characters in string literals.
 
 [CmdletBinding()]
 param(
@@ -34,7 +39,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 $nodeVersion = (node -e 'process.stdout.write(process.versions.node)')
 $nodeMajor = [int]$nodeVersion.Split('.')[0]
 if ($nodeMajor -lt 20) {
-    throw "Node $nodeVersion detected — claude-dsv4f needs v20 or newer. Please upgrade: https://nodejs.org/"
+    throw "Node $nodeVersion detected -- claude-dsv4f needs v20 or newer. Please upgrade: https://nodejs.org/"
 }
 
 # ---------------------------------------------- Find Claude Code binary
@@ -57,7 +62,7 @@ $claudeBin = Find-Claude
 if (-not $claudeBin -and -not $NoAutoInstall) {
     $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
     if ($npmCmd) {
-        Write-Host "Claude Code CLI not found — attempting install via npm..." -ForegroundColor Yellow
+        Write-Host "Claude Code CLI not found -- attempting install via npm..." -ForegroundColor Yellow
         try {
             & npm install -g @anthropic-ai/claude-code 2>&1 | Out-Host
             $claudeBin = Find-Claude
@@ -65,10 +70,10 @@ if (-not $claudeBin -and -not $NoAutoInstall) {
                 Write-Host "Claude Code installed." -ForegroundColor Green
             }
         } catch {
-            Write-Host "  npm install failed — falling through to manual instructions." -ForegroundColor Red
+            Write-Host "  npm install failed -- falling through to manual instructions." -ForegroundColor Red
         }
     } else {
-        Write-Host "  npm not found either — install Node.js (which includes npm) from https://nodejs.org/, then run:" -ForegroundColor Yellow
+        Write-Host "  npm not found either -- install Node.js (which includes npm) from https://nodejs.org/, then run:" -ForegroundColor Yellow
         Write-Host "    npm install -g @anthropic-ai/claude-code" -ForegroundColor Yellow
     }
 }
@@ -84,14 +89,14 @@ if ($src -ne $dest -or $Update) {
     }
     Copy-Item (Join-Path $src "bin") $dest -Recurse -Force
     if (Test-Path (Join-Path $src "e2e")) { Copy-Item (Join-Path $src "e2e") $dest -Recurse -Force }
-    # Skills (Claude Code Skills) — auto-discovered under the dsv4f profile. Copy
+    # Skills (Claude Code Skills) -- auto-discovered under the dsv4f profile. Copy
     # the whole skills/ tree so user-level skills install alongside the binary.
     if (Test-Path (Join-Path $src "skills")) { Copy-Item (Join-Path $src "skills") $dest -Recurse -Force }
 }
 
 # ------------------------------------------ Optional: bundle Claude Code
 # Copies claude into the dsv4f install so the resolver can prefer it. Makes the dsv4f
-# install self-contained — PATH becomes optional.
+# install self-contained -- PATH becomes optional.
 if ($Bundle -and $claudeBin) {
     $bundled = Join-Path $dest "bin\claude.cmd"
     $bundledExe = Join-Path $dest "bin\claude.exe"
@@ -102,7 +107,7 @@ if ($Bundle -and $claudeBin) {
             $exeSibling = $claudeBin -replace '\.cmd$', '.exe'
             if (Test-Path $exeSibling) { Copy-Item -Path $exeSibling -Destination $bundledExe -Force }
         }
-        Write-Host "Bundled Claude Code → $bundled (resolver will prefer this copy)." -ForegroundColor Cyan
+        Write-Host "Bundled Claude Code -> $bundled (resolver will prefer this copy)." -ForegroundColor Cyan
     } catch {
         Write-Host "  WARNING: could not bundle '$claudeBin' into $bundled (continuing anyway)." -ForegroundColor Yellow
     }
