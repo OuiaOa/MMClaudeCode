@@ -177,9 +177,29 @@ async function cmdRun(rest) {
   catch (e) { die(e.message); }
   // Filter --source out of the args we hand to claude (it's a dsv4f flag, not a claude one).
   const claudeArgs = stripSource(rest);
+
+  // Build the child env. Start from the parent env, then explicitly UNSET the two
+  // env vars Claude Code uses to detect "I am inside Claude Code" so the child
+  // announces itself as a foreground interactive session instead of a background
+  // job, and add the override that lets nested sessions persist in --resume.
+  //
+  // No documented env var disables the "I'm a background task" announcement; the
+  // detection is hard-coded against CLAUDECODE / CLAUDE_CODE_CHILD_SESSION /
+  // parent-process checks (verified against code.claude.com/docs/en/env-vars.md
+  // and issue #83830). Stripping both + using acceptEdits mode (see setup) gets
+  // us as close to "foreground interactive" as the docs allow for a shim launch.
+  const childEnv = { ...process.env };
+  delete childEnv.CLAUDECODE;
+  delete childEnv.CLAUDE_CODE_CHILD_SESSION;
+  childEnv.CLAUDE_CONFIG_DIR = PROFILE_DIR;
+  childEnv.CLAUDE_CODE_FORCE_SESSION_PERSISTENCE = '1';
+  // Silence the direct api.anthropic.com telemetry/version-check probe that
+  // bypasses ANTHROPIC_BASE_URL and would fail with the sentinel auth token.
+  childEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
+
   const child = spawn(claude,
     ['--settings', path.join(PROFILE_DIR, 'settings.json'), ...claudeArgs],
-    { stdio: 'inherit', env: { ...process.env, CLAUDE_CONFIG_DIR: PROFILE_DIR } });
+    { stdio: 'inherit', env: childEnv });
   const code = await new Promise((resolve) => child.on('exit', (c) => resolve(c ?? 0)));
   process.exit(code);
 }

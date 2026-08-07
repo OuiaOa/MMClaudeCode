@@ -91,7 +91,13 @@ const settings = {
   },
   effortLevel: 'high',
   skipWebFetchPreflight: true,
-  permissions: { defaultMode: 'auto' },
+  // 'acceptEdits' (not 'auto') because the auto-mode classifier is hosted by
+  // Anthropic at api.anthropic.com, bypasses ANTHROPIC_BASE_URL, and fails
+  // with the sentinel auth token (issue #83773). acceptEdits skips the
+  // classifier entirely per permission-modes.md and auto-approves common
+  // file edits within the working directory. To opt into full bypass of all
+  // prompts, set permissions.defaultMode to 'bypassPermissions' manually.
+  permissions: { defaultMode: 'acceptEdits' },
   ...(statusline ? { statusLine: statusline } : {}),
 };
 const sPath = path.join(PROFILE_DIR, 'settings.json');
