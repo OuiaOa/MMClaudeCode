@@ -172,17 +172,103 @@ console.log(bold(`\nclaude-dsv4f import${DRY ? ' (dry run — nothing written)' 
 console.log(`  from ${SRC}\n  to   ${DST}\n`);
 
 // 1. per-project trees: <SRC>/projects/<proj>/  →  <DST>/projects/<proj>/
+//
+// Interactive selection (only when stderr is a TTY and no explicit selection was given):
+// the user can type "all", "none", "1,3,5", "2-4", or hit Enter to accept the default
+// (all). Non-interactive runs (CI, piped input) default to all so existing behaviour
+// and scripts keep working unchanged.
+
 const projSrc = path.join(SRC, 'projects');
+let selectedProjects = null;   // null = no source dir / no interactive picker; Set = explicit choice
+
 if (fs.existsSync(projSrc)) {
-  for (const proj of fs.readdirSync(projSrc)) {
-    // Do not import this profile's own sessions back into itself.
-    if (proj.includes('claude-dsv4f')) { skipped++; continue; }
+  const allProjects = fs.readdirSync(projSrc)
+    .filter(p => !p.includes('claude-dsv4f'));   // never import this profile into itself
+
+  if (allProjects.length === 0) {
+    console.log(dim('  (no projects found in source)'));
+  } else if (args.includes('--all')) {
+    selectedProjects = new Set(allProjects);
+  } else if (args.includes('--none')) {
+    selectedProjects = new Set();
+  } else if (!DRY && !FORCE && process.stdin.isTTY && process.stdout.isTTY) {
+    // First-run picker: only when the user didn't force --all/--none and there's no marker.
+    // We deliberately skip the picker on --force (re-import) so users re-running don't
+    // have to confirm every time.
+    selectedProjects = await pickProjects(allProjects);
+  }
+
+  const toWalk = selectedProjects
+    ? allProjects.filter(p => selectedProjects.has(p))
+    : allProjects;
+
+  if (selectedProjects) {
+    const skippedByChoice = allProjects.length - toWalk.length;
+    if (skippedByChoice) note('selection', `skipped ${skippedByChoice} project${skippedByChoice === 1 ? '' : 's'} by user choice`);
+  }
+
+  for (const proj of toWalk) {
     const from = path.join(projSrc, proj), to = path.join(DST, 'projects', proj);
     if (!DRY) fs.mkdirSync(to, { recursive: true });
     const { jsonls } = walkTree(from, to);
     if (jsonls) note(`sessions: ${proj.slice(0, 24)}`, `${jsonls} transcript${jsonls === 1 ? '' : 's'}`);
   }
+  skipped += allProjects.length - toWalk.length;
 }
+
+// Ask the user which source projects to import. Returns a Set of names, or `null` for
+// "import none" (the user typed `none` / empty after a previous run was aborted).
+async function pickProjects(projects) {
+  const readline = (await import('node:readline')).default;
+  console.log(bold('\nProjects found in source:'));
+  // Show a short, readable label for each project (decoded-path form) so the user can
+  // pick by something more meaningful than the encoded-path folder name.
+  projects.forEach((p, i) => {
+    const decoded = p.replace(/--/g, ' / ').replace(/^-|-$/g, '') || '(root)';
+    const meta = (() => {
+      try {
+        const st = fs.statSync(path.join(projSrc, p));
+        const jsonls = (() => {
+          let n = 0;
+          const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+            const s = path.join(d, e.name);
+            if (e.isDirectory()) walk(s);
+            else if (e.name.endsWith('.jsonl')) n++;
+          } };
+          try { walk(path.join(projSrc, p)); } catch {}
+          return n;
+        })();
+        const mtime = st.mtime.toISOString().slice(0, 10);
+        return `(${jsonls} transcript${jsonls === 1 ? '' : 's'}, last touched ${mtime})`;
+      } catch { return ''; }
+    })();
+    console.log(`  ${grn(String(i + 1).padStart(3))}. ${decoded}  ${dim(meta)}`);
+  });
+  console.log(dim(`\nTotal: ${projects.length} project${projects.length === 1 ? '' : 's'}`));
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q) => new Promise(res => rl.question(q, a => { res(a.trim()); }));
+  while (true) {
+    const ans = await ask('\nImport which? [all / none / 1,3,5 / 2-4] (Enter = all): ');
+    if (ans === '' || /^all$/i.test(ans)) { rl.close(); return new Set(projects); }
+    if (/^none$/i.test(ans) || ans === '0') { rl.close(); return new Set(); }
+    const set = new Set();
+    let bad = false;
+    for (const part of ans.split(',').map(s => s.trim()).filter(Boolean)) {
+      const m = part.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+      if (!m) { bad = true; break; }
+      const a = parseInt(m[1], 10), b = m[2] ? parseInt(m[2], 10) : a;
+      if (a < 1 || b > projects.length || a > b) { bad = true; break; }
+      for (let i = a; i <= b; i++) set.add(projects[i - 1]);
+    }
+    if (bad) { console.log(yel('  Unrecognised — try: all / none / 1,3 / 2-4')); continue; }
+    rl.close();
+    return set;
+  }
+}
+
+function grn(s) { return `\x1b[32m${s}\x1b[0m`; }
+function yel(s) { return `\x1b[33m${s}\x1b[0m`; }
 
 // 2. portable config — agents, skills, commands, output styles, user CLAUDE.md
 for (const d of ['agents', 'skills', 'commands', 'output-styles']) {

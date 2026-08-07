@@ -172,5 +172,25 @@ console.log('\n\x1b[1mscrub still strips thinking blocks\x1b[0m');
   }
 }
 
+// --- test 5: --all / --none flags drive the interactive picker in non-TTY mode
+console.log('\n\x1b[1m--all / --none flags (non-TTY)\x1b[0m');
+{
+  const { src } = buildFixture();
+  const dstAll = path.join(SCRATCH, 'dst-flag-all');
+  const r1 = runImport(['--source', src, '--force', '--all'], { env: { CLAUDE_DSV4F_PROFILE: dstAll } });
+  check('--all exits 0', r1.status === 0, r1.stderr);
+  check('--all: both projects present',
+    fs.existsSync(path.join(dstAll, 'projects', 'C--Users-test', 'session-A.jsonl')) &&
+    fs.existsSync(path.join(dstAll, 'projects', 'C--Users-other', 'session-B.jsonl')));
+
+  const dstNone = path.join(SCRATCH, 'dst-flag-none');
+  const r2 = runImport(['--source', src, '--force', '--none'], { env: { CLAUDE_DSV4F_PROFILE: dstNone } });
+  check('--none exits 0', r2.status === 0, r2.stderr);
+  const noneProjects = fs.existsSync(path.join(dstNone, 'projects'))
+    ? fs.readdirSync(path.join(dstNone, 'projects'))
+    : [];
+  check('--none: zero projects copied', noneProjects.length === 0, `got: ${noneProjects.join(',')}`);
+}
+
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
 process.exit(fail > 0 ? 1 : 0);

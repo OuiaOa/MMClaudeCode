@@ -44,14 +44,26 @@ export function resolveClaude({ platform = process.platform,
                                 exec = spawnSync } = {}) {
   if (platform !== 'win32') return 'claude';
 
-  // 1) Let cmd.exe's PATHEXT do its job: if 'claude' resolves on PATH (via
-  //    where.exe), we hand back the bare name with no extension.
+  // 1) Bundled copy wins when present. The user ran `install --bundle` (or the
+  //    future self-installing installer placed one) so this copy is the
+  //    authoritative one for the dsv4f install.
+  const bundled = env.DSV4F_DATA_DIR ? path.join(env.DSV4F_DATA_DIR, 'bin') : null;
+  if (bundled) {
+    for (const name of ['claude.exe', 'claude.cmd']) {
+      const p = path.join(bundled, name);
+      try { if (fsSync.existsSync(p)) return p; } catch {}
+    }
+  }
+
+  // 2) Otherwise let cmd.exe's PATHEXT do its job: if 'claude' resolves on PATH
+  //    (via where.exe), hand back the bare name with no extension.
   try {
     const r = exec('where.exe', ['claude'], { stdio: ['ignore', 'pipe', 'ignore'] });
     if (r && r.status === 0 && r.stdout && r.stdout.toString().trim()) return 'claude';
   } catch { /* fall through to path-based lookups below */ }
 
-  // 2) Fallback: scan the few places Claude Code actually lands on Windows.
+  // 3) Final fallback: scan the few places Claude Code actually lands on Windows
+  //    when it's installed outside npm (e.g. direct download to ~/.local/bin).
   const candidates = [
     path.join(home, '.local', 'bin', 'claude.exe'),
     path.join(home, '.local', 'bin', 'claude.cmd'),
@@ -66,7 +78,7 @@ export function resolveClaude({ platform = process.platform,
 
   throw new Error(
     `Claude Code CLI not found.\n` +
-    `  Looked for 'claude' on PATH (via where.exe) and in: ${candidates.join(', ')}\n` +
+    `  Looked for a bundled copy, 'claude' on PATH (via where.exe), and in: ${candidates.join(', ')}\n` +
     `  Install Claude Code from https://claude.com/code, then re-run.`
   );
 }

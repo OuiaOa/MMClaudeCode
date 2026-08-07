@@ -101,5 +101,31 @@ check('Windows + where.exe throws (sandboxed env): falls through to fallback pat
   assert.equal(r, candidate);
 });
 
+check('Windows + DSV4F_DATA_DIR/bin/claude.exe bundled: returned first (PATH bypassed)', () => {
+  const home = path.join(path.parse(os.tmpdir()).root, 'fakehome');
+  const bundled = path.join(home, '.local', 'share', 'claude-dsv4f', 'bin', 'claude.exe');
+  const r = resolveClaude({
+    platform: 'win32',
+    // where.exe finds something on PATH — but bundled should still win
+    exec: () => okWhere,
+    fsSync: fsAllow([bundled]),
+    env: envOf({ DSV4F_DATA_DIR: path.join(home, '.local', 'share', 'claude-dsv4f') }),
+    home,
+  });
+  assert.equal(r, bundled);
+});
+
+check('Windows + DSV4F_DATA_DIR set but no bundled copy: falls through to PATH/lookup', () => {
+  const home = path.join(path.parse(os.tmpdir()).root, 'fakehome');
+  const r = resolveClaude({
+    platform: 'win32',
+    exec: () => okWhere,
+    fsSync: fsAllow([]),
+    env: envOf({ DSV4F_DATA_DIR: path.join(home, '.local', 'share', 'claude-dsv4f') }),
+    home,
+  });
+  assert.equal(r, 'claude');
+});
+
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
 process.exit(fail > 0 ? 1 : 0);
