@@ -1,0 +1,122 @@
+{
+  "_comment": "claude-dsv4f shim configuration. Rates are USD per 1,000,000 tokens.",
+  "port": 8788,
+  "bind": "127.0.0.1",
+  "upstream": "https://api.deepseek.com/anthropic",
+  "balanceUrl": "https://api.deepseek.com/user/balance",
+  "modelsUrl": "https://api.deepseek.com/models",
+  "model": "deepseek-v4-flash",
+  "expectedVersion": "DeepSeek-V4-Flash-0731",
+  "sentinels": {
+    "deepseek-v4-flash": "main",
+    "deepseek-v4-flash-sub": "subagent",
+    "deepseek-v4-flash-bg": "background"
+  },
+  "denyModelPatterns": [
+    "deepseek-v4-pro",
+    "deepseek-reasoner",
+    "deepseek-chat"
+  ],
+  "effort": {
+    "slotDefaults": {
+      "background": "none",
+      "subagent": "high",
+      "main": "high"
+    },
+    "translate": {
+      "none": "none",
+      "off": "none",
+      "minimal": "low",
+      "low": "low",
+      "medium": "medium",
+      "high": "high",
+      "xhigh": "max",
+      "ultra": "ultra",
+      "max": "max"
+    },
+    "ultrathinkPromotesToMax": true,
+    "ultracodePromotesSubagents": true,
+    "heuristic": {
+      "enabled": true,
+      "threshold": 2,
+      "longPromptChars": 600,
+      "bigToolResultChars": 20000,
+      "manyMessages": 30,
+      "keywords": "\\b(why|root cause|debug|diagnose|investigate|race condition|deadlock|intermittent|regression|architect|architecture|design|refactor|redesign|prove|derive|trade-?offs?|optimi[sz]e|profile|bottleneck|threading|concurrency|memory leak|segfault|undefined behaviou?r)\\b",
+      "escalateTo": "ultra",
+      "onlyWhenAuto": true
+    },
+    "ultracodeTtlMinutes": 120,
+    "_measuredEnum": "MEASURED 2026-08-06 from a live 400: low|medium|high|xhigh|ultra|max. There is NO none — thinking is disabled via thinking:{type:disabled} instead. `ultra` is undocumented.",
+    "ultrathinkEscalateTo": "max",
+    "_measuredLadder": "MEASURED 2026-08-06, hard problem, max_tokens=384000, no truncation: ultra=94857 chars thinking / 30911 out / 282s; max=128573 / 39136 / 391s. Non-overlapping ranges. max = +35% reasoning for +39% latency.",
+    "autoLevel": "high",
+    "_autoSemantics": "MEASURED: Claude Code always sends an effort level, so there is no absent state. autoLevel (high) is treated as no-preference and may be escalated by the heuristic; any other level the user picks is honoured verbatim. ultrathink overrides both."
+  },
+  "rates": {
+    "effectiveFrom": "2026-08-06",
+    "source": "https://api-docs.deepseek.com/quick_start/pricing",
+    "deepseek-v4-flash": {
+      "cacheHitInput": 0.0028,
+      "cacheMissInput": 0.14,
+      "output": 0.28
+    }
+  },
+  "peakSurcharge": {
+    "_comment": "Announced 2x peak pricing, NOT yet in effect as of 2026-08-06. Windows are UTC (09:00-12:00 and 14:00-18:00 Beijing = UTC+8). Enable only when DeepSeek announces activation; --reconcile will warn if drawdown suggests it went live.",
+    "enabled": false,
+    "multiplier": 2,
+    "utcWindows": [
+      [
+        1,
+        4
+      ],
+      [
+        6,
+        10
+      ]
+    ]
+  },
+  "cap": {
+    "dailyUsd": 5,
+    "_comment": "Rolling UTC day. Enforced on the conservative cost estimate. Raise with: dsv4f-cap N"
+  },
+  "balance": {
+    "_comment": "GET /user/balance is an account endpoint: no tokens, no inference cost. Polling is activity-driven anyway — a sample taken once work quiesces brackets that work cleanly, which is what --reconcile needs.",
+    "settleSeconds": 60,
+    "idlePollSeconds": 3600,
+    "lowBalanceWarnUsd": 5
+  },
+  "burnRate": {
+    "windowMinutes": 15
+  },
+  "limits": {
+    "maxOutputTokens": 384000,
+    "maxRequestBytes": 268435456
+  },
+  "cacheHygiene": {
+    "stripUserId": true,
+    "stripCacheControl": true
+  },
+  "log": {
+    "verbose": false
+  },
+  "vision": {
+    "_comment": "Images are unsupported on DeepSeek Anthropic endpoint. The shim swaps each image for a text description from a vision model so DeepSeek keeps doing all coding/reasoning. Descriptions are cached by image hash: without that, resending a conversation would re-describe the same screenshot every turn AND mutate the prompt prefix, forfeiting DeepSeek 50x cache-hit discount.",
+    "enabled": true,
+    "model": "google/gemini-3.1-flash-lite",
+    "endpoint": "https://api.deepinfra.com/v1/openai/chat/completions",
+    "keyFile": "deepinfra-key",
+    "promptVersion": "v2",
+    "maxTokens": 1500,
+    "timeoutMs": 120000,
+    "rates": {
+      "inUsdPerM": 0.25,
+      "outUsdPerM": 1.5
+    },
+    "benchmark": "96.3% on real-image suite (8/9 on degraded-photo OCR, only model of 39 to read the handwritten phone number), 100% on UI screenshots, spotted inverted image; ~$0.38/100 screenshots, 14.0s avg. Runner-up google/gemini-2.0-flash-001: 92.6%, 7/9, ~$0.108/100, 18.8s (2026-08-06)",
+    "_promptNote": "Descriptions are deliberately task-agnostic: the cache is keyed on the image alone, so a description steered by one question would be wrongly replayed for later, different questions about the same image.",
+    "dailyCapUsd": 1.5,
+    "_capNote": "Enforced client-side from the ledger: DeepInfra exposes no balance or usage endpoint (every billing path 404s, /v1/me carries no billing fields), so the local ledger is the only record. Cached images are always served even past the cap, since replaying a cached description costs nothing."
+  }
+}

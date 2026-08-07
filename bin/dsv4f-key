@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# dsv4f-key — store an API key without it appearing on screen, in argv, or in shell history.
+#
+#   dsv4f-key deepinfra     prompt for and store the DeepInfra key
+#   dsv4f-key deepseek      replace the DeepSeek key
+#   dsv4f-key --list        show which keys are stored (never their contents)
+#
+# Paste at the prompt and press enter. Nothing is echoed.
+
+set -euo pipefail
+
+CONFIG_DIR="${DSV4F_CONFIG_DIR:-$HOME/.config/claude-dsv4f}"
+mkdir -p "$CONFIG_DIR"; chmod 700 "$CONFIG_DIR"
+
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+warn() { printf '\033[33m%s\033[0m\n' "$*"; }
+fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+
+case "${1:-}" in
+  deepinfra) FILE="$CONFIG_DIR/deepinfra-key"; LABEL="DeepInfra"
+             VERIFY_URL="https://api.deepinfra.com/v1/openai/models" ;;
+  deepseek)  FILE="$CONFIG_DIR/key";           LABEL="DeepSeek"
+             VERIFY_URL="https://api.deepseek.com/user/balance" ;;
+  openrouter) FILE="$CONFIG_DIR/openrouter-key"; LABEL="OpenRouter"
+             VERIFY_URL="https://openrouter.ai/api/v1/key" ;;
+  --list|-l)
+    for n in "key:DeepSeek" "deepinfra-key:DeepInfra" "openrouter-key:OpenRouter"; do
+      f="${n%%:*}"; l="${n##*:}"
+      if [[ -s "$CONFIG_DIR/$f" ]]; then
+        printf '%-12s stored   perms=%s  %s bytes\n' "$l" "$(stat -c %a "$CONFIG_DIR/$f")" "$(stat -c %s "$CONFIG_DIR/$f")"
+      else
+        printf '%-12s not set\n' "$l"
+      fi
+    done
+    exit 0 ;;
+  -h|--help|"")
+    cat <<'EOF'
+Usage:
+  dsv4f-key deepinfra     store the DeepInfra API key
+  dsv4f-key openrouter    store the OpenRouter API key
+  dsv4f-key deepseek      replace the DeepSeek API key
+  dsv4f-key --list        show which keys are stored
+
+Paste the key at the prompt and press enter. It is not echoed, not stored in
+shell history, and never passed as a command argument.
+EOF
+    exit 0 ;;
+  *) fail "unknown provider '${1}'. Use: deepinfra | deepseek | openrouter | --list" ;;
+esac
+
+echo
+bold "$LABEL API key"
+echo "Paste it and press enter. Input is hidden."
+echo
+
+key=""
+if { : < /dev/tty; } 2>/dev/null; then
+  printf '%s key: ' "$LABEL" > /dev/tty
+  IFS= read -rs key < /dev/tty
+  printf '\n' > /dev/tty
+elif [[ -t 0 ]]; then
+  printf '%s key: ' "$LABEL"
+  IFS= read -rs key
+  echo
+else
+  # Piped input, e.g. from a password manager.
+  IFS= read -r key || true
+fi
+
+key="${key//[$'\r\n\t ']/}"
+[[ -n "$key" ]] || fail "Empty input, nothing written."
+
+umask 077
+printf '%s' "$key" > "$FILE"
+chmod 600 "$FILE"
+bold "Stored in $FILE (mode 0600)."
+
+echo
+printf 'Verifying... '
+# The key goes to curl over stdin via --config, never in argv: /proc/<pid>/cmdline is
+# world-readable, and this box has a second UID. Keeping the promise in the header comment.
+code="$(printf 'header = "Authorization: Bearer %s"\nurl = "%s"\nsilent\noutput = "/dev/null"\nwrite-out = "%%{http_code}"\nmax-time = 20\n' "$key" "$VERIFY_URL" \
+  | curl --config - || echo 000)"
+unset key
+if [[ "$code" == "200" ]]; then
+  printf '\033[32mOK (HTTP 200)\033[0m\n'
+else
+  printf '\033[31mFAILED (HTTP %s)\033[0m\n' "$code"
+  warn "The key was still written. Re-run to replace it if it was mistyped."
+  exit 1
+fi

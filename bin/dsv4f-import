@@ -1,0 +1,237 @@
+#!/usr/bin/env node
+/**
+ * dsv4f-import — bring your existing Claude Code state into the claude-dsv4f profile.
+ *
+ * Copies memories, per-project session transcripts, permissions and any agents/skills/commands
+ * from ~/.claude into ~/.claude-dsv4f, so `claude-dsv4f` in a project directory sees the same
+ * history and can --resume it.
+ *
+ * Transcripts are SANITISED on the way in, and that is the part that makes resume actually work
+ * rather than 400 on the first turn. Anthropic assistant turns carry thinking blocks with
+ * cryptographic signatures that DeepSeek cannot validate, plus image blocks its endpoint does
+ * not accept at all. Copying them verbatim produces a conversation that cannot be replayed. So:
+ *   - thinking / redacted_thinking blocks are dropped, and any `signature` field with them
+ *   - image and document blocks become a short text placeholder
+ *   - cache_control markers are stripped (DeepSeek ignores them; they only bloat the body)
+ *
+ * The walk is recursive. Each Claude Code project directory contains:
+ *   - <uuid>.jsonl             — main session transcript (scrubbed)
+ *   - <uuid>/subagents/*.jsonl — subagent transcripts (also scrubbed)
+ *   - <uuid>/subagents/*.meta.json
+ *   - <uuid>/tool-results/*    — blobs referenced by tool_result blocks (copied verbatim)
+ *   - <uuid>/.meta.json
+ *   - memory/                  — project-scoped memories
+ * The old non-recursive walk silently dropped every nested file, which made subagent
+ * sessions invisible to `claude --resume`.
+ *
+ * Never copies .credentials.json — that is an Anthropic OAuth session and is meaningless here.
+ *
+ * Usage: dsv4f-import [--dry-run] [--force] [--source <path>]
+ *
+ *   --source <path>   import from a directory other than ~/.claude
+ *                      (if ~/.claude is missing AND stdin is a TTY, you'll be prompted)
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+const HOME = os.homedir();
+const DST = process.env.CLAUDE_DSV4F_PROFILE || path.join(HOME, '.claude-dsv4f');
+const MARKER = path.join(DST, '.imported');
+
+const args = process.argv.slice(2);
+const DRY = args.includes('--dry-run');
+const FORCE = args.includes('--force');
+
+// --source <path>  (or  --source=<path>)
+function argSource() {
+  const eq = args.find(a => a.startsWith('--source='));
+  if (eq) return eq.slice('--source='.length);
+  const i = args.indexOf('--source');
+  if (i >= 0 && args[i + 1] && !args[i + 1].startsWith('--')) return args[i + 1];
+  return null;
+}
+
+const bold = s => `\x1b[1m${s}\x1b[0m`;
+const dim = s => `\x1b[2m${s}\x1b[0m`;
+const red = s => `\x1b[31m${s}\x1b[0m`;
+const die = (m) => { console.error(red(m)); process.exit(1); };
+
+let SRC = argSource() || path.join(HOME, '.claude');
+if (!fs.existsSync(SRC)) {
+  // Only prompt when the user didn't already specify --source AND there's a real terminal
+  // attached. In a sandboxed/automated run we just fail with a clear message.
+  const TTY = process.stdin.isTTY && process.stdout.isTTY;
+  if (!DRY && TTY && !argSource()) {
+    const readline = (await import('node:readline')).default;
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ans = await new Promise(res => rl.question(
+      `No ~/.claude found at ${SRC}.\nEnter a different path to import from (Enter to abort): `,
+      a => { rl.close(); res(a.trim()); }
+    ));
+    if (!ans) die('Aborted.');
+    SRC = path.resolve(ans);
+  }
+  if (!fs.existsSync(SRC)) die(
+    `No source directory at ${SRC}.\n` +
+    `  Pass --source <path> to specify one, or run interactively so it can be prompted.`
+  );
+}
+
+if (fs.existsSync(MARKER) && !FORCE && !DRY) {
+  console.log(`Already imported (${fs.readFileSync(MARKER, 'utf8').trim()}). Use --force to redo.`);
+  process.exit(0);
+}
+
+let copied = 0, sanitised = 0, skipped = 0, thinkingDropped = 0, imagesDropped = 0;
+const plan = [];
+
+function note(what, detail) { plan.push(`  ${what.padEnd(34)} ${detail}`); }
+
+// ------------------------------------------------------------------ sanitising
+
+function scrubContent(content) {
+  if (!Array.isArray(content)) return content;
+  const out = [];
+  for (const b of content) {
+    if (!b || typeof b !== 'object') { out.push(b); continue; }
+    if (b.type === 'thinking' || b.type === 'redacted_thinking') { thinkingDropped++; continue; }
+    if (b.type === 'image') {
+      imagesDropped++;
+      out.push({ type: 'text', text: '[image from a previous session — not carried over]' });
+      continue;
+    }
+    if (b.type === 'document') {
+      out.push({ type: 'text', text: '[document from a previous session — not carried over]' });
+      continue;
+    }
+    const c = { ...b };
+    delete c.cache_control;
+    delete c.signature;
+    if (Array.isArray(c.content)) c.content = scrubContent(c.content);   // tool_result nesting
+    out.push(c);
+  }
+  return out;
+}
+
+function scrubTranscript(srcFile, dstFile) {
+  const lines = fs.readFileSync(srcFile, 'utf8').split('\n');
+  const out = [];
+  for (const line of lines) {
+    if (!line.startsWith('{')) continue;
+    let j;
+    try { j = JSON.parse(line); } catch { continue; }
+    if (j.message?.content) j.message.content = scrubContent(j.message.content);
+    out.push(JSON.stringify(j));
+  }
+  if (!DRY) {
+    fs.mkdirSync(path.dirname(dstFile), { recursive: true });
+    fs.writeFileSync(dstFile, out.join('\n') + '\n');
+  }
+  return out.length;
+}
+
+// -------------------------------------------------------------------- recursive walk
+//
+// Walks `from` recursively, writing to the same relative path under `to`.
+//   - .jsonl files are scrubbed (thinking blocks / images / signatures stripped)
+//   - everything else is copied verbatim (PDFs, .meta.json, etc. — these are referenced
+//     from .jsonl entries and must be byte-identical for Claude Code to load them)
+
+function walkTree(from, to) {
+  let entries;
+  try { entries = fs.readdirSync(from, { withFileTypes: true }); }
+  catch { return; }          // unreadable dir — skip silently
+  for (const e of entries) {
+    const s = path.join(from, e.name);
+    const d = path.join(to, e.name);
+    if (e.isDirectory()) {
+      if (!DRY) fs.mkdirSync(d, { recursive: true });
+      walkTree(s, d);
+      continue;
+    }
+    if (e.name.endsWith('.jsonl')) {
+      if (scrubTranscript(s, d) === 0) note(`transcript ${e.name.slice(0, 8)}`, 'empty after scrub');
+      sanitised++;
+    } else {
+      if (!DRY) { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d); }
+    }
+    copied++;
+  }
+}
+
+console.log(bold(`\nclaude-dsv4f import${DRY ? ' (dry run — nothing written)' : ''}\n`));
+console.log(`  from ${SRC}\n  to   ${DST}\n`);
+
+// 1. per-project trees: <SRC>/projects/<proj>/  →  <DST>/projects/<proj>/
+const projSrc = path.join(SRC, 'projects');
+if (fs.existsSync(projSrc)) {
+  for (const proj of fs.readdirSync(projSrc)) {
+    // Do not import this profile's own sessions back into itself.
+    if (proj.includes('claude-dsv4f')) { skipped++; continue; }
+    const from = path.join(projSrc, proj), to = path.join(DST, 'projects', proj);
+    if (!DRY) fs.mkdirSync(to, { recursive: true });
+    walkTree(from, to);
+    const jsonlCount = (() => {
+      let n = 0;
+      const walk = (p) => { for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+        const sub = path.join(p, e.name);
+        if (e.isDirectory()) walk(sub);
+        else if (e.name.endsWith('.jsonl')) n++;
+      } };
+      try { walk(from); } catch {}
+      return n;
+    })();
+    if (jsonlCount) note(`sessions: ${proj.slice(0, 24)}`, `${jsonlCount} transcript${jsonlCount === 1 ? '' : 's'}`);
+  }
+}
+
+// 2. portable config — agents, skills, commands, output styles, user CLAUDE.md
+for (const d of ['agents', 'skills', 'commands', 'output-styles']) {
+  const from = path.join(SRC, d);
+  if (fs.existsSync(from)) {
+    const to = path.join(DST, d);
+    if (!DRY) fs.mkdirSync(to, { recursive: true });
+    const before = copied;
+    walkTree(from, to);
+    const added = copied - before;
+    if (added) note(d, `${added} file${added === 1 ? '' : 's'}`);
+  }
+}
+const userMd = path.join(SRC, 'CLAUDE.md');
+if (fs.existsSync(userMd)) {
+  if (!DRY) fs.copyFileSync(userMd, path.join(DST, 'CLAUDE.md'));
+  note('CLAUDE.md', 'user-level instructions'); copied++;
+}
+
+// 3. permissions — merged, never overwriting the env block that IS the integration
+const srcSettings = (() => { try { return JSON.parse(fs.readFileSync(path.join(SRC, 'settings.json'), 'utf8')); } catch { return null; } })();
+const dstPath = path.join(DST, 'settings.json');
+const dstSettings = (() => { try { return JSON.parse(fs.readFileSync(dstPath, 'utf8')); } catch { return null; } })();
+if (srcSettings?.permissions?.allow && dstSettings) {
+  const have = new Set(dstSettings.permissions?.allow || []);
+  const add = srcSettings.permissions.allow.filter(r => !have.has(r));
+  if (add.length) {
+    dstSettings.permissions = dstSettings.permissions || {};
+    dstSettings.permissions.allow = [...(dstSettings.permissions.allow || []), ...add];
+    if (!DRY) { fs.writeFileSync(dstPath, JSON.stringify(dstSettings, null, 2) + '\n'); fs.chmodSync(dstPath, 0o600); }
+    note('permissions', `${add.length} rule${add.length === 1 ? '' : 's'} merged`);
+  } else note('permissions', 'already up to date');
+}
+
+console.log(plan.join('\n') || '  (nothing to import)');
+console.log(bold('\nSummary'));
+console.log(`  files copied        : ${copied}`);
+console.log(`  transcripts scrubbed: ${sanitised}`);
+console.log(`  thinking blocks     : ${thinkingDropped} dropped ${dim('(signatures DeepSeek cannot validate)')}`);
+console.log(`  images/documents    : ${imagesDropped} replaced ${dim('(unsupported upstream)')}`);
+if (skipped) console.log(`  skipped             : ${skipped} dsv4f project dir(s)`);
+console.log(dim('\n  .credentials.json was NOT copied — it is an Anthropic session, meaningless here.'));
+
+if (!DRY) {
+  fs.mkdirSync(DST, { recursive: true });
+  fs.writeFileSync(MARKER, new Date().toISOString() + '\n');
+  console.log(`\n${bold('Done.')} cd into any project and run: dsv4f run --resume\n`);
+} else {
+  console.log(`\n${bold('Dry run.')} Re-run without --dry-run to apply.\n`);
+}
