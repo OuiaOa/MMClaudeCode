@@ -84,6 +84,9 @@ if ($src -ne $dest -or $Update) {
     }
     Copy-Item (Join-Path $src "bin") $dest -Recurse -Force
     if (Test-Path (Join-Path $src "e2e")) { Copy-Item (Join-Path $src "e2e") $dest -Recurse -Force }
+    # Skills (Claude Code Skills) — auto-discovered under the dsv4f profile. Copy
+    # the whole skills/ tree so user-level skills install alongside the binary.
+    if (Test-Path (Join-Path $src "skills")) { Copy-Item (Join-Path $src "skills") $dest -Recurse -Force }
 }
 
 # ------------------------------------------ Optional: bundle Claude Code

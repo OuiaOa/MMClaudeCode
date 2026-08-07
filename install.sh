@@ -71,6 +71,11 @@ if [[ "$SRC" != "$DEST" || "$UPDATE" -eq 1 ]]; then
   cp -r "$SRC"/shim.mjs "$SRC"/probe.mjs "$SRC"/statusline.sh "$SRC"/test-shim.mjs \
         "$SRC"/config.default.json "$SRC"/bin "$DEST"/
   [[ -d "$SRC/e2e" ]] && cp -r "$SRC/e2e" "$DEST"/ || true
+  # Skills (Claude Code Skills) ship with the dsv4f profile and live next to it. Each
+  # skill is a folder with SKILL.md; Claude Code auto-discovers them under
+  # $CLAUDE_CONFIG_DIR/skills. Copy the whole tree so user-level skills install
+  # alongside the binary.
+  [[ -d "$SRC/skills" ]] && cp -r "$SRC/skills" "$DEST/" || true
 fi
 chmod +x "$DEST"/bin/* "$DEST"/statusline.sh 2>/dev/null || true
 
