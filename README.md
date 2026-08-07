@@ -8,30 +8,38 @@ and never reads your Anthropic credentials.
 
 ## Install
 
-**New here? Read [INSTALL.md](INSTALL.md)** — step-by-step for Windows 11, macOS and Linux,
-including prerequisites and troubleshooting. The short version:
+Three commands per platform — download, unpack, install. `dsv4f setup` prompts for your
+DeepSeek API key and finishes the rest.
 
 **Linux / macOS / WSL**
 
 ```bash
-tar -xzf claude-dsv4f-*.tar.gz
-cd claude-dsv4f && ./install.sh
+cd ~/Downloads
+curl -L -o claude-dsv4f.zip https://github.com/OuiaOa/claude-dsv4f/archive/refs/heads/main.zip
+unzip -q claude-dsv4f.zip && cd claude-dsv4f-main
+./install.sh
 dsv4f setup
 ```
 
 **Windows 11 (PowerShell)**
 
 ```powershell
-tar -xzf claude-dsv4f-*.tar.gz
-cd claude-dsv4f
+cd $HOME\Downloads
+curl.exe -L -o claude-dsv4f.zip https://github.com/OuiaOa/claude-dsv4f/archive/refs/heads/main.zip
+tar -xf claude-dsv4f.zip
+cd claude-dsv4f-main
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 # open a new terminal so PATH updates
 dsv4f setup
 ```
 
-Requires Node 20+ and the Claude Code CLI already installed. `dsv4f setup` prompts for your
-DeepSeek API key (hidden — never echoed, never in argv or shell history), probes the endpoint
-to calibrate itself, writes the profile, and starts the shim.
+**macOS GUI alternative** — `Finder` double-click on `install.command` does the same as the
+three shell lines above.
+
+**Prerequisites** — Node 20+ (`node --version`) and the Claude Code CLI already installed
+(`claude --version`). `dsv4f setup` will prompt you to install either automatically if they're
+missing and the installer can reach npm. Full step-by-step with troubleshooting is in
+[INSTALL.md](INSTALL.md).
 
 Optionally `dsv4f key deepinfra` to enable screenshots — DeepSeek's endpoint cannot accept
 images, so they are transcribed by a vision model first.
