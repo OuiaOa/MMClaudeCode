@@ -152,14 +152,9 @@ async function cmdRun(rest) {
   if (!await cmdStart({ quiet: true })) process.exit(1);
 
   // First run: pull across memories, transcripts and permissions (scrubbed so they resume).
-  // Pull --source from the rest args so `dsv4f run --source <path>` propagates into the importer.
-  const sourceArg = (() => {
-    const i = rest.indexOf('--source');
-    if (i >= 0 && rest[i + 1]) return [rest[i], rest[i + 1]];
-    const eq = rest.find(a => a.startsWith('--source='));
-    if (eq) return [eq];
-    return [];
-  })();
+  // --source <path> propagates into the importer (handled below as a dsv4f flag, then stripped
+  // before we hand the rest to claude).
+  const sourceArg = parseSource(rest);
   if (!fs.existsSync(path.join(PROFILE_DIR, '.imported'))) {
     const srcDefault = path.join(HOME, '.claude', 'projects');
     if (fs.existsSync(srcDefault) || sourceArg.length > 0) {
@@ -177,20 +172,37 @@ async function cmdRun(rest) {
   // Resolve the Claude Code binary. On Windows this honours PATHEXT (so a `claude.exe`
   // installed outside npm works), and falls back to common install locations if PATH
   // is unset. See bin/dsv4f-lib.mjs for the resolver.
-  const claude = (() => { try { return resolveClaude(); } catch (e) { die(e.message); } })();
+  let claude;
+  try { claude = resolveClaude(); }
+  catch (e) { die(e.message); }
   // Filter --source out of the args we hand to claude (it's a dsv4f flag, not a claude one).
-  const claudeArgs = [];
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i];
-    if (a === '--source') { i++; continue; }   // skip the flag AND its value
-    if (typeof a === 'string' && a.startsWith('--source=')) continue;
-    claudeArgs.push(a);
-  }
+  const claudeArgs = stripSource(rest);
   const child = spawn(claude,
     ['--settings', path.join(PROFILE_DIR, 'settings.json'), ...claudeArgs],
     { stdio: 'inherit', env: { ...process.env, CLAUDE_CONFIG_DIR: PROFILE_DIR } });
   const code = await new Promise((resolve) => child.on('exit', (c) => resolve(c ?? 0)));
   process.exit(code);
+}
+
+// --source <path>  or  --source=<path>  — return the argv slice to forward.
+function parseSource(argv) {
+  const i = argv.indexOf('--source');
+  if (i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--')) return [argv[i], argv[i + 1]];
+  const eq = argv.find(a => a.startsWith('--source='));
+  if (eq) return [eq];
+  return [];
+}
+
+// Strip --source (and its value) from an argv list, so it isn't handed to claude.
+function stripSource(argv) {
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--source') { i++; continue; }                  // skip flag + value
+    if (typeof a === 'string' && a.startsWith('--source=')) continue;
+    out.push(a);
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------------ caps

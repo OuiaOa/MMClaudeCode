@@ -137,27 +137,35 @@ function scrubTranscript(srcFile, dstFile) {
 //   - .jsonl files are scrubbed (thinking blocks / images / signatures stripped)
 //   - everything else is copied verbatim (PDFs, .meta.json, etc. — these are referenced
 //     from .jsonl entries and must be byte-identical for Claude Code to load them)
+// Returns { files, jsonls } ACROSS THE WHOLE TREE (recursive), so the caller can log a
+// single per-section count without re-walking the source. Sub-walks aggregate their
+// counts into the parent's return value.
 
 function walkTree(from, to) {
   let entries;
   try { entries = fs.readdirSync(from, { withFileTypes: true }); }
-  catch { return; }          // unreadable dir — skip silently
+  catch { return { files: 0, jsonls: 0 }; }   // unreadable dir — skip silently
+  let files = 0, jsonls = 0;
   for (const e of entries) {
     const s = path.join(from, e.name);
     const d = path.join(to, e.name);
     if (e.isDirectory()) {
       if (!DRY) fs.mkdirSync(d, { recursive: true });
-      walkTree(s, d);
+      const sub = walkTree(s, d);
+      files  += sub.files;
+      jsonls += sub.jsonls;
       continue;
     }
     if (e.name.endsWith('.jsonl')) {
       if (scrubTranscript(s, d) === 0) note(`transcript ${e.name.slice(0, 8)}`, 'empty after scrub');
-      sanitised++;
+      jsonls++; sanitised++;
     } else {
       if (!DRY) { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d); }
+      files++;
     }
-    copied++;
   }
+  copied += files + jsonls;
+  return { files, jsonls };
 }
 
 console.log(bold(`\nclaude-dsv4f import${DRY ? ' (dry run — nothing written)' : ''}\n`));
@@ -171,32 +179,19 @@ if (fs.existsSync(projSrc)) {
     if (proj.includes('claude-dsv4f')) { skipped++; continue; }
     const from = path.join(projSrc, proj), to = path.join(DST, 'projects', proj);
     if (!DRY) fs.mkdirSync(to, { recursive: true });
-    walkTree(from, to);
-    const jsonlCount = (() => {
-      let n = 0;
-      const walk = (p) => { for (const e of fs.readdirSync(p, { withFileTypes: true })) {
-        const sub = path.join(p, e.name);
-        if (e.isDirectory()) walk(sub);
-        else if (e.name.endsWith('.jsonl')) n++;
-      } };
-      try { walk(from); } catch {}
-      return n;
-    })();
-    if (jsonlCount) note(`sessions: ${proj.slice(0, 24)}`, `${jsonlCount} transcript${jsonlCount === 1 ? '' : 's'}`);
+    const { jsonls } = walkTree(from, to);
+    if (jsonls) note(`sessions: ${proj.slice(0, 24)}`, `${jsonls} transcript${jsonls === 1 ? '' : 's'}`);
   }
 }
 
 // 2. portable config — agents, skills, commands, output styles, user CLAUDE.md
 for (const d of ['agents', 'skills', 'commands', 'output-styles']) {
   const from = path.join(SRC, d);
-  if (fs.existsSync(from)) {
-    const to = path.join(DST, d);
-    if (!DRY) fs.mkdirSync(to, { recursive: true });
-    const before = copied;
-    walkTree(from, to);
-    const added = copied - before;
-    if (added) note(d, `${added} file${added === 1 ? '' : 's'}`);
-  }
+  if (!fs.existsSync(from)) continue;
+  const to = path.join(DST, d);
+  if (!DRY) fs.mkdirSync(to, { recursive: true });
+  const { files } = walkTree(from, to);
+  if (files) note(d, `${files} file${files === 1 ? '' : 's'}`);
 }
 const userMd = path.join(SRC, 'CLAUDE.md');
 if (fs.existsSync(userMd)) {
