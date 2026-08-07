@@ -90,6 +90,61 @@ function note(what, detail) { plan.push(`  ${what.padEnd(34)} ${detail}`); }
 
 // ------------------------------------------------------------------ sanitising
 
+/**
+ * Anthropic-meta tags embedded in TEXT strings. These are part of how Claude Code's
+ * runtime / IDE talks to Claude; they are meaningless to DeepSeek and the Anthropic-shaped
+ * prompts that already lost their meaning would just confuse the new model. Removing them
+ * keeps the conversation flow intact without dragging Anthropic-specific scaffolding along.
+ *
+ * The match is line-aware: a tag that opens on one line and closes on a later line still
+ * matches, because tool results can be very long. The whole region is replaced with a
+ * short note so the next model knows something was elided without losing track of position.
+ */
+const TAG_PATTERNS = [
+  // System reminders Claude Code injects into the prompt — none of the context is useful
+  // when the runtime is gone and the model is DeepSeek.
+  { re: /<system-reminder>[\s\S]*?<\/system-reminder>/g, label: '[system-reminder elided]' },
+  // IDE selection snapshots (cursor position, etc.) — stale and Anthropic-specific.
+  { re: /<ide_selection>[\s\S]*?<\/ide_selection>/g, label: '[ide_selection elided]' },
+  // Skill / tool result envelope markers occasionally appear inline when Claude Code nests a
+  // tool call result inside a user message. We treat them the same as the structural block
+  // version above.
+  { re: /<antml:[a-z_]+>[\s\S]*?<\/antml:[a-z_]+>/g, label: '[antml tag elided]' },
+];
+
+/**
+ * Patterns for AI-self-descriptions that DeepSeek should not parrot back. These are
+ * Anthropic-specific and only ever appear when Claude itself wrote the text; the user
+ * almost certainly did not. Strip them so the resumed session does not lead off with "as
+ * an AI assistant by Anthropic" or similar nonsense when DeepSeek has no idea what Claude is.
+ *
+ * Conservative on purpose — only matches the *exact* Claude/Anthropic boilerplate, never
+ * the user's own words.
+ */
+const SELF_DESC_PATTERNS = [
+  /\bI'?m Claude(?:,? an AI assistant (?:made|built) by Anthropic)?\.?/gi,
+  /\bI am Claude\b[^.]{0,80}\. ?/gi,
+  /\bI'?m an AI (?:assistant|model)(?:[^.]{0,80})?(?:made|built|created|trained|developed) by Anthropic\.?/gi,
+  /\bI'?m an AI(?:[^.]{0,60})\bby Anthropic\.?/gi,
+  /\bI was made by Anthropic\.?/gi,
+  /\bI was trained by Anthropic\.?/gi,
+];
+
+/**
+ * Strips a string of Anthropic-specific scaffolding. Returns the same string with no
+ * detectable differences if nothing matches, so it is safe to call unconditionally on every
+ * text field.
+ */
+function scrubText(s) {
+  if (typeof s !== 'string' || !s) return s;
+  let out = s;
+  for (const { re, label } of TAG_PATTERNS) out = out.replace(re, label);
+  for (const re of SELF_DESC_PATTERNS) out = out.replace(re, '');
+  // Collapse runs of blank lines left by removals; preserves real paragraph breaks.
+  out = out.replace(/\n{3,}/g, '\n\n').trim();
+  return out;
+}
+
 function scrubContent(content) {
   if (!Array.isArray(content)) return content;
   const out = [];
@@ -108,6 +163,7 @@ function scrubContent(content) {
     const c = { ...b };
     delete c.cache_control;
     delete c.signature;
+    if (typeof c.text === 'string') c.text = scrubText(c.text);
     if (Array.isArray(c.content)) c.content = scrubContent(c.content);   // tool_result nesting
     out.push(c);
   }
@@ -121,7 +177,17 @@ function scrubTranscript(srcFile, dstFile) {
     if (!line.startsWith('{')) continue;
     let j;
     try { j = JSON.parse(line); } catch { continue; }
-    if (j.message?.content) j.message.content = scrubContent(j.message.content);
+    // Top-level .message is the SDK shape; some Claude Code builds nest into .payload
+    // instead. Cover both so we don't miss lines on either format.
+    const target = j.message || j.payload?.message;
+    if (target?.content) {
+      const scrubbed = scrubContent(target.content);
+      if (j.message) j.message.content = scrubbed;
+      else j.payload.message.content = scrubbed;
+    }
+    // Also scrub the cached system prompt block if it was inlined into the transcript —
+    // happens on a few Claude Code versions and carries the same Anthropic-specific tags.
+    if (typeof j.system === 'string') j.system = scrubText(j.system);
     out.push(JSON.stringify(j));
   }
   if (!DRY) {
@@ -129,6 +195,25 @@ function scrubTranscript(srcFile, dstFile) {
     fs.writeFileSync(dstFile, out.join('\n') + '\n');
   }
   return out.length;
+}
+
+/**
+ * Strips Anthropic-specific scaffolding from a memory file's text content. The whole file
+ * is read, scrubbed, and rewritten. Unlike transcripts, memory files are usually user-written
+ * markdown so we keep this conservative: only tag regions and the AI-self-description
+ * patterns above are touched. Everything else is preserved exactly.
+ */
+function scrubMemoryFile(srcFile, dstFile) {
+  let raw;
+  try { raw = fs.readFileSync(srcFile, 'utf8'); }
+  catch { return false; }
+  const cleaned = scrubText(raw);
+  if (cleaned === raw) return false;   // no change — skip the write to keep mtime stable
+  if (!DRY) {
+    fs.mkdirSync(path.dirname(dstFile), { recursive: true });
+    fs.writeFileSync(dstFile, cleaned);
+  }
+  return true;
 }
 
 // -------------------------------------------------------------------- recursive walk
@@ -141,17 +226,19 @@ function scrubTranscript(srcFile, dstFile) {
 // single per-section count without re-walking the source. Sub-walks aggregate their
 // counts into the parent's return value.
 
-function walkTree(from, to) {
+function walkTree(from, to, rel = '') {
   let entries;
   try { entries = fs.readdirSync(from, { withFileTypes: true }); }
   catch { return { files: 0, jsonls: 0 }; }   // unreadable dir — skip silently
   let files = 0, jsonls = 0;
+  const inMemory = rel.split(path.sep).includes('memory') || from.endsWith(`${path.sep}memory`);
   for (const e of entries) {
     const s = path.join(from, e.name);
     const d = path.join(to, e.name);
+    const childRel = rel ? path.join(rel, e.name) : e.name;
     if (e.isDirectory()) {
       if (!DRY) fs.mkdirSync(d, { recursive: true });
-      const sub = walkTree(s, d);
+      const sub = walkTree(s, d, childRel);
       files  += sub.files;
       jsonls += sub.jsonls;
       continue;
@@ -160,8 +247,18 @@ function walkTree(from, to) {
       if (scrubTranscript(s, d) === 0) note(`transcript ${e.name.slice(0, 8)}`, 'empty after scrub');
       jsonls++; sanitised++;
     } else {
-      if (!DRY) { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d); }
-      files++;
+      // .md files inside a memory/ subtree are scanned for Anthropic-specific tags
+      // (system-reminder, "I am Claude", etc.). The text is otherwise preserved verbatim
+      // — we never rewrite user-written markdown otherwise. Other files (PDFs, .meta.json)
+      // are copied byte-identical: Claude Code's tool_result blocks reference them by hash.
+      if (e.name.endsWith('.md') && inMemory) {
+        if (scrubMemoryFile(s, d)) files++;
+        else if (!DRY) { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d); files++; }
+        else files++;
+      } else {
+        if (!DRY) { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d); }
+        files++;
+      }
     }
   }
   copied += files + jsonls;

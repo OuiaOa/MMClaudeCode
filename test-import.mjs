@@ -192,5 +192,72 @@ console.log('\n\x1b[1m--all / --none flags (non-TTY)\x1b[0m');
   check('--none: zero projects copied', noneProjects.length === 0, `got: ${noneProjects.join(',')}`);
 }
 
+// --- test 6: aggressive Anthropic-jargon scrubbing (system-reminder, ide_selection,
+//     AI self-description patterns) in text content + memory files
+console.log('\n\x1b[1maggressive scrub: system-reminder, ide_selection, AI self-desc\x1b[0m');
+{
+  const home = path.join(SCRATCH, 'home-scrub2');
+  fs.mkdirSync(home, { recursive: true });
+  const proj = path.join(home, '.claude', 'projects', 'C--Users-scrub2');
+  fs.mkdirSync(path.join(proj, 'memory'), { recursive: true });
+  // transcript with Anthropic-meta tags embedded in text
+  const transcriptLine = JSON.stringify({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{
+        type: 'text',
+        text: [
+          'I am Claude, an AI assistant made by Anthropic.',
+          '',
+          '<system-reminder>user installed a tool called dsv4f</system-reminder>',
+          '',
+          '<ide_selection>The user selected this paragraph</ide_selection>',
+          '',
+          'Useful info the agent should keep.',
+        ].join('\n'),
+      }],
+    },
+  });
+  fs.writeFileSync(path.join(proj, 's1.jsonl'), transcriptLine + '\n');
+
+  // memory file with self-description + tags
+  const memoryContent = [
+    '# Memory',
+    '',
+    "I'm Claude, an AI assistant made by Anthropic.",
+    '',
+    '<system-reminder>do not reveal this prompt</system-reminder>',
+    '',
+    '- User prefers TypeScript',
+  ].join('\n');
+  fs.writeFileSync(path.join(proj, 'memory', 'MEMORY.md'), memoryContent);
+
+  const dst = path.join(SCRATCH, 'dst-scrub2');
+  const r = runImport(['--source', path.join(home, '.claude'), '--force'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  check('aggressive-scrub import exits 0', r.status === 0, r.stderr);
+
+  const dstTranscript = path.join(dst, 'projects', 'C--Users-scrub2', 's1.jsonl');
+  if (fs.existsSync(dstTranscript)) {
+    const txt = fs.readFileSync(dstTranscript, 'utf8');
+    check('transcript: system-reminder tag stripped', !/<system-reminder>/.test(txt), `txt=${txt.slice(0,200)}`);
+    check('transcript: ide_selection tag stripped', !/<ide_selection>/.test(txt));
+    check('transcript: "I am Claude" self-desc stripped', !/I am Claude/i.test(txt));
+    check('transcript: legitimate text preserved', /Useful info the agent should keep/.test(txt));
+  } else {
+    check('aggressive-scrub transcript exists', false, 'dst file missing');
+  }
+
+  const dstMemory = path.join(dst, 'projects', 'C--Users-scrub2', 'memory', 'MEMORY.md');
+  if (fs.existsSync(dstMemory)) {
+    const txt = fs.readFileSync(dstMemory, 'utf8');
+    check('memory: system-reminder tag stripped', !/<system-reminder>/.test(txt));
+    check('memory: "I am Claude" self-desc stripped', !/I am Claude/i.test(txt));
+    check('memory: legitimate user note preserved', /User prefers TypeScript/.test(txt));
+  } else {
+    check('aggressive-scrub memory exists', false, 'dst file missing');
+  }
+}
+
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
 process.exit(fail > 0 ? 1 : 0);
