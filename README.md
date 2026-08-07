@@ -48,9 +48,12 @@ dsv4f cap vision 3             daily vision cap
 ```
 
 On first `dsv4f run` your existing memories, session transcripts and permissions are imported
-from `~/.claude`. Transcripts are scrubbed of thinking-block signatures (which DeepSeek cannot
-validate) and image blocks (unsupported), without which old sessions cannot be resumed.
-Re-run manually any time with `dsv4f-import --force`.
+from `~/.claude`. The walk is recursive: subagent transcripts (`<session>/subagents/*.jsonl`)
+and tool-result blobs (`<session>/tool-results/*`) come across too, so subagent sessions
+appear in `--resume`. Transcripts are scrubbed of thinking-block signatures (which DeepSeek
+cannot validate) and image blocks (unsupported), without which old sessions cannot be resumed.
+Re-run manually any time with `dsv4f-import --force`. If `~/.claude` is missing or lives
+elsewhere, run `dsv4f-import --source <path>` (or pass `--source` through `dsv4f run`).
 
 Sessions are keyed by directory, so `cd` into a project and `dsv4f run --resume` finds its
 history — including sessions originally created by the Claude Code desktop app, which writes

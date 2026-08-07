@@ -264,6 +264,18 @@ open a new terminal after installing. See the platform section above.
 `journalctl --user -u claude-dsv4f-shim -n 50`. The usual cause is another program already
 using port 8788; change it with `"port": 8799` in `~/.config/claude-dsv4f/config.json`.
 
+**`dsv4f run` says `'claude.cmd' is not recognized`** — older versions hardcoded the
+literal string `claude.cmd`, which `cmd.exe` treats as a fully-qualified filename and
+does not resolve via `PATHEXT`. claude-dsv4f resolves `claude` via `PATHEXT` and falls
+back to common install locations (`%USERPROFILE%\.local\bin\`, `%APPDATA%\npm\`). If you
+still see this, install Claude Code from https://claude.com/code, then re-run.
+
+**No sessions appear after `dsv4f-import --force`** — the importer walks recursively now,
+so subagent transcripts (`<session>/subagents/*.jsonl`) and tool-result blobs
+(`<session>/tool-results/*`) are included. If a session is still missing, run
+`dsv4f-import --source <path-to-your-.claude> --force` and check `~/.claude-dsv4f/projects/`
+for the encoded-path folder matching your cwd (e.g. `C--Users-you`).
+
 **`FAILED (HTTP 401)` when entering a key** — the key is wrong or was pasted with a missing
 character. Run `dsv4f key deepseek` again.
 

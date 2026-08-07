@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
+import { resolveClaude } from './dsv4f-lib.mjs';
 
 const HOME = os.homedir();
 const WIN = process.platform === 'win32';
@@ -151,15 +152,57 @@ async function cmdRun(rest) {
   if (!await cmdStart({ quiet: true })) process.exit(1);
 
   // First run: pull across memories, transcripts and permissions (scrubbed so they resume).
-  if (!fs.existsSync(path.join(PROFILE_DIR, '.imported')) && fs.existsSync(path.join(HOME, '.claude', 'projects'))) {
-    console.error('dsv4f: first run — importing existing Claude Code state...');
-    spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4f-import')], { stdio: 'inherit' });
+  // --source <path> propagates into the importer (handled below as a dsv4f flag, then stripped
+  // before we hand the rest to claude).
+  const sourceArg = parseSource(rest);
+  if (!fs.existsSync(path.join(PROFILE_DIR, '.imported'))) {
+    const srcDefault = path.join(HOME, '.claude', 'projects');
+    if (fs.existsSync(srcDefault) || sourceArg.length > 0) {
+      console.error('dsv4f: first run — importing existing Claude Code state...');
+      const r = spawnSync(process.execPath,
+        [path.join(ROOT, 'bin', 'dsv4f-import'), ...sourceArg],
+        { stdio: 'inherit' });
+      if (r.status !== 0) process.exit(r.status ?? 1);
+    } else {
+      console.error(`dsv4f: no Claude Code state found at ${path.join(HOME, '.claude')} — skipping first-run import.`);
+      console.error('         pass --source <path> on `dsv4f run` to import from a different location.');
+    }
   }
 
-  const r = spawnSync(WIN ? 'claude.cmd' : 'claude',
-    ['--settings', path.join(PROFILE_DIR, 'settings.json'), ...rest],
-    { stdio: 'inherit', env: { ...process.env, CLAUDE_CONFIG_DIR: PROFILE_DIR }, shell: WIN });
-  process.exit(r.status ?? 0);
+  // Resolve the Claude Code binary. On Windows this honours PATHEXT (so a `claude.exe`
+  // installed outside npm works), and falls back to common install locations if PATH
+  // is unset. See bin/dsv4f-lib.mjs for the resolver.
+  let claude;
+  try { claude = resolveClaude(); }
+  catch (e) { die(e.message); }
+  // Filter --source out of the args we hand to claude (it's a dsv4f flag, not a claude one).
+  const claudeArgs = stripSource(rest);
+  const child = spawn(claude,
+    ['--settings', path.join(PROFILE_DIR, 'settings.json'), ...claudeArgs],
+    { stdio: 'inherit', env: { ...process.env, CLAUDE_CONFIG_DIR: PROFILE_DIR } });
+  const code = await new Promise((resolve) => child.on('exit', (c) => resolve(c ?? 0)));
+  process.exit(code);
+}
+
+// --source <path>  or  --source=<path>  — return the argv slice to forward.
+function parseSource(argv) {
+  const i = argv.indexOf('--source');
+  if (i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--')) return [argv[i], argv[i + 1]];
+  const eq = argv.find(a => a.startsWith('--source='));
+  if (eq) return [eq];
+  return [];
+}
+
+// Strip --source (and its value) from an argv list, so it isn't handed to claude.
+function stripSource(argv) {
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--source') { i++; continue; }                  // skip flag + value
+    if (typeof a === 'string' && a.startsWith('--source=')) continue;
+    out.push(a);
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------------ caps
@@ -287,6 +330,11 @@ switch (cmd) {
   case 'status': await cmdStatus(); break;
   case 'run':    await cmdRun(rest); break;
   case 'cap':    capCmd(rest); break;
+  case 'import': {
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4f-import'), ...rest], { stdio: 'inherit' });
+    process.exit(r.status ?? 0);
+    break;
+  }
   case 'setup':  spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4f-setup.mjs'), ...rest], { stdio: 'inherit' }); break;
   case 'help': case '--help': case '-h': case '-help': case undefined:
     help(rest[0]); break;
