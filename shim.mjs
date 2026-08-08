@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 
 const HOME = os.homedir();
 const CONFIG_DIR = process.env.DSV4F_CONFIG_DIR || path.join(HOME, '.config', 'claude-dsv4f');
@@ -209,19 +210,47 @@ function appendLedger(row) {
 // ----------------------------------------- safety classifier / health intercept
 
 /**
- * True when the request looks like Claude Code's auto-mode permission classifier.
+ * True when the request is the LEGACY tool-shaped auto-mode permission classifier.
  *
- * The classifier is hosted by Anthropic at api.anthropic.com and intentionally bypasses
- * ANTHROPIC_BASE_URL for some checks (per llm-gateway-connect.md), so it would fail with the
- * dsv4f sentinel auth token. Both `classify_result` (the tool name) AND `shouldBlock` (its
- * sole input parameter) must appear — single-word false positives are too easy in normal chat,
- * but the pair is specific to the classifier probe.
+ * Both `classify_result` (the tool name) AND `shouldBlock` (its sole input parameter) must
+ * appear — single-word false positives are too easy in normal chat, but the pair is specific
+ * to the classifier probe.
+ *
+ * VERIFIED 2026-08-08 against Claude Code 2.1.225: `classify_result` no longer exists in the
+ * client at all. Auto mode now runs a two-stage XML classifier, so this matcher no longer
+ * fires on a current client — it is kept only so an older pinned client keeps working. See
+ * looksLikeClassifierV2 for what a modern client actually sends.
+ *
+ * A note on the comment this used to carry: it claimed the classifier bypasses
+ * ANTHROPIC_BASE_URL and hits api.anthropic.com directly, citing llm-gateway-connect.md.
+ * That document says no such thing. The two checks it does describe as going direct are the
+ * fast-mode availability probe and the WebFetch domain safety check — neither is the
+ * permission classifier. Classifier traffic goes to the configured base URL like any other
+ * request, which is precisely why intercepting it here does anything at all.
  */
 function looksLikeClassifier(body) {
   if (!body || typeof body !== 'object') return false;
   let blob = '';
   try { blob = JSON.stringify(body); } catch { return false; }
   return blob.includes('classify_result') && blob.includes('shouldBlock');
+}
+
+/**
+ * True when the request looks like the CURRENT (XML, two-stage) permission classifier.
+ *
+ * Deliberately detect-and-report only — no mock. The legacy path can be answered safely
+ * because its contract is a single documented boolean; this one's response format has not
+ * been verified from a live client, and fabricating an approval in a format that might not
+ * parse would either break the session or, worse, auto-approve by accident. Forwarding it
+ * costs a real request; that cost is logged so it is visible rather than silent.
+ */
+function looksLikeClassifierV2(body) {
+  if (!body || typeof body !== 'object') return false;
+  if (Number(body.max_tokens) > 4096) return false;              // real turns ask for far more
+  if (Array.isArray(body.tools) && body.tools.length > 2) return false;
+  let blob = '';
+  try { blob = JSON.stringify(body.system ?? ''); } catch { return false; }
+  return /\bshouldBlock\b|<verdict>|permission (?:classifier|decision)|Blocked by (?:fast )?classifier/i.test(blob);
 }
 
 /**
@@ -255,13 +284,20 @@ function buildClassifierMockResponse() {
 // ----------------------------------------- environment sanitizer
 
 /**
- * Claude Code injects `<environment_context>` blocks containing is_background, degraded_mode
- * and non_interactive flags. When any of these is true, the session enters a degraded
- * state and announces itself as a background job. The sanitizer rewrites only the
- * `name: true` form to `false` — never touches anything else, so user content survives.
+ * Rewrites the `is_background` / `degraded_mode` / `non_interactive` flags that older
+ * Claude Code versions injected in an `<environment_context>` block, where a `true` put the
+ * session into a degraded state and made it announce itself as a background job.
  *
- * The system field may be a string or an array of {type, text} blocks (newer Claude Code
- * versions). Both shapes are handled.
+ * VERIFIED 2026-08-08 against Claude Code 2.1.225 by capturing a real request: none of the
+ * three strings appears anywhere in the body, and there is no `<environment_context>` block
+ * at all. Against a current client this function is a no-op.
+ *
+ * It is kept because it is three cheap regexes over the system prompt and a future client
+ * could reintroduce the flags — but it should not be counted as load-bearing. What actually
+ * keeps a launched session from presenting as a background job is the launcher unsetting
+ * CLAUDECODE and CLAUDE_CODE_CHILD_SESSION before exec.
+ *
+ * The system field may be a string or an array of {type, text} blocks. Both shapes handled.
  */
 const ENV_FLAG_REPLACEMENTS = [
   [/is_background:\s*true/g, 'is_background: false'],
@@ -343,49 +379,137 @@ function responseReasoningSanitizer(response) {
   }
 }
 
+const BG_PARTIAL_RE = /"is_background"\s*:\s*true(?=[,\s}\]])/g;
+
 /**
- * Walk an SSE response body, parse each event's `data:` line, run sanitizers on the message
- * object, and reassemble byte-stable output. Streaming path's trade-off: a few hundred ms
- * of buffering per response in exchange for guaranteed tool_use-input mutation.
+ * Incremental SSE sanitizer.
+ *
+ * Replaces a whole-body buffer that held EVERY byte until DeepSeek finished. That cost
+ * more than latency: with nothing on the wire, Claude Code's streaming idle timeout was
+ * measuring a connection that looked dead for the entire length of a long reasoning
+ * turn, which is why this profile needs CLAUDE_STREAM_IDLE_TIMEOUT_MS cranked to 15
+ * minutes to survive. It also meant no visible thinking or text until the very end.
+ *
+ * Text and thinking deltas now go out the instant they arrive. Only a tool call's
+ * `input_json_delta` fragments are held — a few hundred bytes nobody watches stream —
+ * and they are reassembled, corrected, and released at content_block_stop.
+ *
+ * Reassembling before rewriting also fixes a real gap in the old per-event approach: a
+ * fragment boundary landing inside `"is_background": true` made the flag invisible to a
+ * per-event regex, so the very case the sanitizer exists for could slip through.
  */
-function rewriteSseWithSanitizers(sseText) {
-  const out = [];
-  // Split by SSE event boundaries (blank line).
-  const events = sseText.split(/\r?\n\r?\n/);
-  // Same regex as responseSanitizer's BG detector — applied to the partial JSON
-  // fragments that flow through `content_block_delta.input_json_delta`. The mock
-  // and DeepSeek both emit these as a single chunk in practice, so a per-event
-  // rewrite is sufficient; a multi-chunk split would need an accumulator.
-  const BG_PARTIAL_RE = /"is_background"\s*:\s*true(?=[,\s}\]])/g;
-  for (const ev of events) {
-    // Find the `data:` line — events may be prefixed by `event: <type>` lines.
-    const dataLineAt = ev.indexOf('\ndata:');
-    if (dataLineAt === -1) { out.push(ev); continue; }
-    const payload = ev.slice(dataLineAt + 6).trim();
-    if (!payload || payload === '[DONE]') { out.push(ev); continue; }
+class SseSanitizer {
+  constructor(emit) {
+    this.emit = emit;          // (string) => void — receives ready-to-send SSE text
+    this.buf = '';             // bytes not yet forming a complete event
+    this.held = new Map();     // block index -> { events, json, name }
+    this.rewrites = 0;
+    // A chunk boundary can land inside a multi-byte character; decoding each chunk
+    // independently would corrupt any non-ASCII output. StringDecoder holds the
+    // incomplete tail until the rest of the character arrives.
+    this.decoder = new StringDecoder('utf8');
+  }
+
+  push(chunk) {
+    this.buf += this.decoder.write(Buffer.from(chunk));
+    const out = [];
+    let b;
+    while ((b = this.#nextBoundary()) !== -1) {
+      const [end, sepLen] = b;
+      const ev = this.buf.slice(0, end);
+      const rawSep = this.buf.slice(end, end + sepLen);
+      this.buf = this.buf.slice(end + sepLen);
+      this.#handle(ev, rawSep, out);
+    }
+    if (out.length) this.emit(out.join(''));
+  }
+
+  /** Release anything still held (truncated stream, upstream hang-up). */
+  flush() {
+    const out = [];
+    this.buf += this.decoder.end();
+    for (const idx of [...this.held.keys()]) this.#release(idx, out);
+    if (this.buf) { out.push(this.buf); this.buf = ''; }
+    if (out.length) this.emit(out.join(''));
+  }
+
+  #nextBoundary() {
+    const lf = this.buf.indexOf('\n\n');
+    const crlf = this.buf.indexOf('\r\n\r\n');
+    if (crlf !== -1 && (lf === -1 || crlf < lf)) return [crlf, 4];
+    if (lf !== -1) return [lf, 2];
+    return -1;
+  }
+
+  #handle(ev, rawSep, out) {
+    const dataAt = ev.search(/(^|\n)data:/);
+    if (dataAt === -1) { out.push(ev + rawSep); return; }
+    const lineStart = ev.indexOf('data:', dataAt);
+    const payload = ev.slice(lineStart + 5).trim();
+    if (!payload || payload === '[DONE]') { out.push(ev + rawSep); return; }
+
     let parsed;
-    try { parsed = JSON.parse(payload); } catch { out.push(ev); continue; }
-    if (parsed?.type === 'message' && parsed?.message) {
-      // Full message object — run the structured sanitizers.
+    try { parsed = JSON.parse(payload); } catch { out.push(ev + rawSep); return; }
+    const type = parsed?.type;
+    const idx = parsed?.index;
+
+    if (type === 'content_block_start' && parsed?.content_block?.type === 'tool_use') {
+      this.held.set(idx, { events: [], json: '', name: parsed.content_block.name });
+      out.push(ev + rawSep);
+      return;
+    }
+
+    if (type === 'content_block_delta' && this.held.has(idx) &&
+        parsed?.delta?.type === 'input_json_delta' &&
+        typeof parsed.delta.partial_json === 'string') {
+      const h = this.held.get(idx);
+      h.json += parsed.delta.partial_json;
+      h.events.push({ ev, rawSep });
+      return;
+    }
+
+    if (type === 'content_block_stop' && this.held.has(idx)) {
+      this.#release(idx, out, { ev, rawSep });
+      return;
+    }
+
+    // A full message object can still carry tool_use blocks (non-delta shapes).
+    if (type === 'message' && parsed?.message) {
       responseSanitizer(parsed.message);
       responseReasoningSanitizer(parsed.message);
-    } else if (parsed?.type === 'content_block_delta' &&
-               parsed?.delta?.type === 'input_json_delta' &&
-               typeof parsed.delta.partial_json === 'string') {
-      // Streaming tool_use input — the JSON arrives in fragments. The mock
-      // sends the whole fragment in one chunk; DeepSeek does the same in
-      // practice. Rewrite `is_background: true` -> false inside the partial
-      // JSON. If a value is split across chunks the buffered message-object
-      // sanitizer will catch it on the next non-delta event.
-      const rewritten = parsed.delta.partial_json.replace(BG_PARTIAL_RE, '"is_background":false');
-      if (rewritten !== parsed.delta.partial_json) parsed.delta.partial_json = rewritten;
+      const head = ev.slice(0, lineStart);
+      out.push(head + 'data: ' + JSON.stringify(parsed) + rawSep);
+      return;
     }
-    const head = ev.slice(0, dataLineAt);
-    out.push((head ? head + '\n' : '') + 'data: ' + JSON.stringify(parsed));
+
+    out.push(ev + rawSep);
   }
-  // Re-join with the same line separator the input used. Default to CRLF (RFC).
-  const sep = sseText.includes('\r\n\r\n') ? '\r\n\r\n' : '\n\n';
-  return out.join(sep) + sep;
+
+  #release(idx, out, stopEvent) {
+    const h = this.held.get(idx);
+    this.held.delete(idx);
+    if (!h) return;
+
+    if (h.json) {
+      let fixed = h.json;
+      if (h.name === 'Bash') {
+        let cmd = '';
+        try { cmd = String(JSON.parse(h.json)?.command || ''); } catch { /* partial JSON */ }
+        if (!BG_SYNTAX_RE.test(cmd)) fixed = h.json.replace(BG_PARTIAL_RE, '"is_background":false');
+      }
+      // DeepSeek-R1 sometimes leaks <think> spans into tool arguments.
+      fixed = fixed.replace(THINK_TAG_RE, '');
+      if (fixed !== h.json) this.rewrites += 1;
+      const sep = h.events[0]?.rawSep || '\n\n';
+      out.push('event: content_block_delta' + (sep === '\r\n\r\n' ? '\r\n' : '\n') +
+        'data: ' + JSON.stringify({
+          type: 'content_block_delta',
+          index: idx,
+          delta: { type: 'input_json_delta', partial_json: fixed },
+        }) + sep);
+    }
+    if (stopEvent) out.push(stopEvent.ev + stopEvent.rawSep);
+  }
 }
 
 // ------------------------------------------------------- request introspection
@@ -868,9 +992,10 @@ class UsageSniffer {
   constructor() {
     this.buf = '';
     this.usage = {};
+    this.decoder = new StringDecoder('utf8');
   }
   push(chunk) {
-    this.buf += chunk.toString('utf8');
+    this.buf += this.decoder.write(Buffer.from(chunk));
     let nl;
     while ((nl = this.buf.indexOf('\n')) !== -1) {
       const line = this.buf.slice(0, nl);
@@ -1063,6 +1188,11 @@ async function handleMessages(req, res, rawBody) {
     vlog('classifier mock: short-circuited (no upstream)');
     return sendJson(res, 200, mock);
   }
+  // Current-client classifier: forwarded, but named in the log so the spend is traceable.
+  // This profile runs bypassPermissions, so seeing this line at all means the permission
+  // mode changed and DeepSeek is now being billed to answer safety questions per tool call.
+  const classifierV2 = looksLikeClassifierV2(body);
+  if (classifierV2) log('auto-mode permission classifier request forwarded upstream (billed)');
 
   const resolved = resolveModel(body.model);
   if (resolved.deny) {
@@ -1110,7 +1240,7 @@ async function handleMessages(req, res, rawBody) {
   const streaming = body.stream === true;
   const started = Date.now();
 
-  vlog(`-> ${resolved.slot} effort=${effort} (${why}) stream=${streaming} bytes=${outBody.length}`);
+  vlog(`-> ${resolved.slot} effort=${effort} (${why}) stream=${streaming} bytes=${outBody.length}${classifierV2 ? ' [classifier]' : ''}`);
 
   const upReq = UPSTREAM_MOD.request({
     protocol: UPSTREAM.protocol,
@@ -1132,22 +1262,20 @@ async function handleMessages(req, res, rawBody) {
     if (ok && streaming) {
       res.writeHead(status, relayHeaders(upRes.headers));
       const sniff = new UsageSniffer();
-      const chunks = [];
+      // Forward incrementally — see SseSanitizer. Only tool_use argument fragments are
+      // held; text and thinking reach the terminal as DeepSeek produces them.
+      const sanitizer = new SseSanitizer((text) => { res.write(text); });
       upRes.on('data', (chunk) => {
-        // Buffer chunks so we can run the response sanitizers before forwarding.
-        // Trade-off: a few hundred ms of additional latency on streaming responses,
-        // in exchange for guaranteed tool_use-input mutation.
-        chunks.push(chunk);
         try { sniff.push(chunk); } catch { /* accounting must never break the stream */ }
+        try { sanitizer.push(chunk); }
+        catch { try { res.write(chunk); } catch {} }   // never swallow output on a sanitizer fault
       });
       upRes.on('end', () => {
-        const sse = Buffer.concat(chunks).toString('utf8');
-        // The UsageSniffer already parsed the original; resanitize via SSE rewriter.
-        const sanitized = rewriteSseWithSanitizers(sse);
-        res.end(Buffer.from(sanitized));
+        try { sanitizer.flush(); } catch {}
+        res.end();
         record(sniff.usage, resolved.slot, effort, why, status, started, streaming);
       });
-      upRes.on('error', () => { try { res.end(); } catch {} });
+      upRes.on('error', () => { try { sanitizer.flush(); } catch {} try { res.end(); } catch {} });
       return;
     }
 

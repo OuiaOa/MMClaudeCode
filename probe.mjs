@@ -189,8 +189,15 @@ const filler = 'The quick brown fox jumps over the lazy dog. '.repeat(220); // ~
   });
 
   // 11. effort ladder — measure every level, including the undocumented `ultra`. ----
-  // max_tokens must be generous or low/medium truncate at the ceiling and the comparison
-  // is meaningless (that is what made the first version of this probe inconclusive).
+  // max_tokens must be generous or the levels truncate at the ceiling and the comparison
+  // is meaningless. The note above said exactly that and the value stayed at 4,000 anyway:
+  // the 2026-08-07 run recorded output_tokens=4000 for ALL SIX levels, i.e. every one of
+  // them hit the cap, and the probe then reported "levels look identical" and stored
+  // effortTakesEffect:false. That conclusion measured the ceiling, not the model.
+  // Fixed 2026-08-08: a real budget, an explicit truncation check via stop_reason, and a
+  // comparison on thinking volume — which is the thing effort actually governs — rather
+  // than on output_tokens, which saturates.
+  const LADDER_MAX_TOKENS = 64000;
   const q = 'A farmer must cross a river with a wolf, a goat and a cabbage. The boat holds ' +
             'the farmer plus one item. Wolf eats goat if left alone; goat eats cabbage if left ' +
             'alone. Give the full sequence of crossings and prove it is minimal.';
@@ -202,13 +209,15 @@ const filler = 'The quick brown fox jumps over the lazy dog. '.repeat(220); // ~
   for (const lvl of ladder) {
     const t0 = Date.now();
     const rr = await req(`${ANTHROPIC}/messages`, {
-      body: { model: MODEL, max_tokens: 4000, messages: [{ role: 'user', content: q }], [results.effortField]: { effort: lvl } },
+      body: { model: MODEL, max_tokens: LADDER_MAX_TOKENS, messages: [{ role: 'user', content: q }], [results.effortField]: { effort: lvl } },
     });
     const u = rr.json?.usage || {};
     const thinkBlocks = (rr.json?.content || []).filter(b => b.type === 'thinking');
     const thinkChars = thinkBlocks.reduce((s, b) => s + (b.thinking || '').length, 0);
     const rec = {
       status: rr.status,
+      stopReason: rr.json?.stop_reason ?? null,
+      truncated: rr.json?.stop_reason === 'max_tokens',
       outputTokens: u.output_tokens ?? 0,
       inputTokens: u.input_tokens ?? 0,
       thinkingBlocks: thinkBlocks.length,
@@ -216,13 +225,30 @@ const filler = 'The quick brown fox jumps over the lazy dog. '.repeat(220); // ~
       ms: Date.now() - t0,
     };
     results.effortLadder[lvl] = rec;
-    rows.push(`${lvl.padEnd(7)} out=${String(rec.outputTokens).padStart(5)}  think=${String(rec.thinkingChars).padStart(6)}ch  ${String(rec.ms).padStart(6)}ms${rr.status !== 200 ? `  HTTP ${rr.status}` : ''}`);
+    rows.push(`${lvl.padEnd(7)} out=${String(rec.outputTokens).padStart(6)}  think=${String(rec.thinkingChars).padStart(7)}ch  ${String(rec.ms).padStart(6)}ms` +
+              `${rec.truncated ? '  TRUNCATED' : ''}${rr.status !== 200 ? `  HTTP ${rr.status}` : ''}`);
   }
-  const outs = ladder.map(l => results.effortLadder[l]?.outputTokens || 0);
-  results.effortTakesEffect = Math.max(...outs) > Math.min(...outs) * 1.15;
-  note('effort ladder', results.effortTakesEffect ? true : null, {
-    summary: (results.effortTakesEffect ? 'levels differ measurably' : 'levels look identical — investigate') +
-             '\n      ' + rows.join('\n      '),
+  const recs = ladder.map(l => results.effortLadder[l]).filter(r => r && r.status === 200);
+  const truncated = recs.filter(r => r.truncated).length;
+  // Effort governs how much the model thinks, so compare thinking volume. Output length
+  // saturates against max_tokens and tells you nothing once anything has truncated.
+  const think = recs.map(r => r.thinkingChars);
+  const spread = think.length && Math.min(...think) > 0 ? Math.max(...think) / Math.min(...think) : 0;
+  results.effortLadderTruncated = truncated;
+  results.effortTakesEffect = truncated === 0 && spread > 1.15;
+
+  let verdict;
+  if (!recs.length) verdict = 'no level returned 200 — inconclusive';
+  else if (truncated) {
+    // Never let a capped run masquerade as a finding in either direction.
+    verdict = `INCONCLUSIVE: ${truncated}/${recs.length} level(s) hit the ${LADDER_MAX_TOKENS.toLocaleString()}-token ceiling; raise LADDER_MAX_TOKENS and re-run`;
+  } else if (results.effortTakesEffect) {
+    verdict = `levels differ measurably (${spread.toFixed(2)}x thinking between lowest and highest)`;
+  } else {
+    verdict = `levels look identical (${spread.toFixed(2)}x thinking spread, no truncation) — the endpoint may be ignoring effort`;
+  }
+  note('effort ladder', truncated ? null : (results.effortTakesEffect ? true : null), {
+    summary: verdict + '\n      ' + rows.join('\n      '),
   });
 
   // 12. balance ---------------------------------------------------------------
