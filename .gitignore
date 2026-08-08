@@ -6,6 +6,14 @@ shim.log
 shim.pid
 vision-cache/
 
+# Updater bookkeeping (see bin/dsv4f-update.mjs). The cache clone is where the
+# repo is fetched to; only files git tracks are copied out of it into the install,
+# which is what keeps an update from ever touching the runtime state above.
+.update-cache/
+.installed-commit
+.last-update.json
+backups/
+
 # Rendered E2E fixtures are reproducible from e2e/gen-scenes.mjs
 e2e/scenes/
 e2e/scene-truth.json
