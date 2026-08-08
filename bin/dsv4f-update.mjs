@@ -20,7 +20,7 @@
  * except to add newly-introduced config keys.
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 
@@ -75,6 +75,7 @@ if (installed) {
 if (CHECK_ONLY) process.exit(installed === remote ? 0 : 10);
 
 git(['reset', '--hard', '--quiet', remote]);
+installPrePushHook();   // .git/hooks/ is untracked, so `reset --hard` cannot restore it
 
 // ------------------------------------------------------------------- apply
 // Only what git tracks. A runtime file is untracked by construction, so it is not
@@ -193,6 +194,22 @@ function restartShim() {
         `Get-NetTCPConnection -LocalPort ${port} -State Listen -EA SilentlyContinue | Select-Object -Expand OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -EA SilentlyContinue }`], DATA)
     : run('sh', ['-c', `lsof -ti tcp:${port} | xargs -r kill`], DATA);
   log(kill.ok ? 'shim stopped — it restarts on the new code on next use' : 'could not stop the shim; restart it yourself');
+}
+
+/**
+ * Installs the pre-push guard into the CACHE clone itself — CACHE is the repo
+ * this project pushes from, so this is the only .git/hooks/ that matters. Runs
+ * from CACHE's own bin/pre-push-hook.sh (present after the reset above), so
+ * there is no dependency on any other clone existing on the machine.
+ */
+function installPrePushHook() {
+  const src = join(CACHE, 'bin', 'pre-push-hook.sh');
+  if (!existsSync(src)) return;
+  const dst = join(CACHE, '.git', 'hooks', 'pre-push');
+  mkdirSync(dirname(dst), { recursive: true });
+  cpSync(src, dst, { force: true });
+  try { chmodSync(dst, 0o755); } catch { /* no-op on Windows filesystems */ }
+  log('pre-push guard (re)installed');
 }
 
 function writeResult(o) {
