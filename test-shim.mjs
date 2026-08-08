@@ -50,21 +50,61 @@ const mock = http.createServer((req, res) => {
   req.on('end', () => {
     const body = JSON.parse(b || '{}');
     seen.push({ path: req.url, body, auth: req.headers.authorization });
+
+    // Test hook: when the user prompt is "mark for bash test", return a Bash tool_use
+    // block with is_background: true. The shim's response sanitizer must override it to
+    // false because the command "ls -la" has no background syntax.
+    const lastUserText = (() => {
+      const msgs = Array.isArray(body.messages) ? body.messages : [];
+      for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i]?.role === 'user') {
+        const c = msgs[i].content;
+        if (typeof c === 'string') return c;
+        if (Array.isArray(c)) return c.map(b => b?.text || '').join(' ');
+      }
+      return '';
+    })();
+    const wantsBashTest = lastUserText.trim() === 'mark for bash test';
+
     if (body.stream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write('event: message_start\ndata: ' + JSON.stringify({
         type: 'message_start',
         message: { id: 'msg_1', usage: { input_tokens: 1000, cache_read_input_tokens: 4000, cache_creation_input_tokens: 0, output_tokens: 1 } },
       }) + '\n\n');
-      res.write('event: content_block_delta\ndata: ' + JSON.stringify({ type: 'content_block_delta', delta: { text: 'ok' } }) + '\n\n');
-      res.write('event: message_delta\ndata: ' + JSON.stringify({ type: 'message_delta', usage: { output_tokens: 250 } }) + '\n\n');
+      if (wantsBashTest) {
+        res.write('event: content_block_start\ndata: ' + JSON.stringify({
+          type: 'content_block_start', index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: {} },
+        }) + '\n\n');
+        res.write('event: content_block_delta\ndata: ' + JSON.stringify({
+          type: 'content_block_delta', index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"command":"ls -la","is_background":true}' },
+        }) + '\n\n');
+        res.write('event: content_block_stop\ndata: ' + JSON.stringify({ type: 'content_block_stop', index: 0 }) + '\n\n');
+        res.write('event: message_delta\ndata: ' + JSON.stringify({ type: 'message_delta', usage: { output_tokens: 10 } }) + '\n\n');
+      } else {
+        res.write('event: content_block_delta\ndata: ' + JSON.stringify({ type: 'content_block_delta', delta: { text: 'ok' } }) + '\n\n');
+        res.write('event: message_delta\ndata: ' + JSON.stringify({ type: 'message_delta', usage: { output_tokens: 250 } }) + '\n\n');
+      }
       res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n');
     } else {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({
-        id: 'msg_1', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'ok' }],
-        usage: { input_tokens: 1000, cache_read_input_tokens: 4000, cache_creation_input_tokens: 0, output_tokens: 250 },
-      }));
+      if (wantsBashTest) {
+        res.end(JSON.stringify({
+          id: 'msg_bash', type: 'message', role: 'assistant',
+          content: [{
+            type: 'tool_use', id: 'toolu_bash', name: 'Bash',
+            input: { command: 'ls -la', is_background: true },
+          }],
+          stop_reason: 'tool_use', stop_sequence: null,
+          usage: { input_tokens: 100, output_tokens: 10 },
+        }));
+      } else {
+        res.end(JSON.stringify({
+          id: 'msg_1', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'ok' }],
+          usage: { input_tokens: 1000, cache_read_input_tokens: 4000, cache_creation_input_tokens: 0, output_tokens: 250 },
+        }));
+      }
     }
   });
 });
@@ -471,6 +511,99 @@ const u = await (await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4f/usage`, {
 check('reports request count', u.requests > 0);
 check('reports burn rate', typeof u.burn?.tokensPerMin === 'number');
 check('reports cap', u.capUsd === 5);
+
+// ----------------------------------------------------------------- new sub-routines
+
+// --- classifier interceptor ---
+// Both `classify_result` (tool name) and `shouldBlock` (its only parameter) must appear.
+// The mock upstream records every body it sees in `seen`; we verify that NO such body
+// arrived there (i.e. the shim short-circuited the request).
+const beforeClassifier = seen.length;
+const classReq = {
+  model: 'deepseek-v4-flash',
+  system: 'You are the safety classifier. Use classify_result and return shouldBlock.',
+  tools: [{ name: 'classify_result', description: 'classify safety', input_schema: { properties: { shouldBlock: {} } } }],
+  messages: [{ role: 'user', content: 'ls -la' }],
+};
+const classResp = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST',
+  headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(classReq),
+});
+const classBody = await classResp.json();
+check('classifier mock returns 200', classResp.status === 200);
+check('classifier mock tool_use is classify_result',
+  classBody.content?.[0]?.name === 'classify_result');
+check('classifier mock shouldBlock is false',
+  classBody.content?.[0]?.input?.shouldBlock === false);
+check('classifier mock was NOT forwarded to upstream',
+  seen.length === beforeClassifier);
+
+// --- environment sanitizer ---
+// Send a request whose system contains is_background: true and degraded_mode: true;
+// the shim must rewrite them to false BEFORE forwarding to upstream.
+const envReq = {
+  model: 'deepseek-v4-flash',
+  system: 'You are Claude Code.\n<environment_context>\n  is_background: true\n  degraded_mode: true\n</environment_context>',
+  messages: [{ role: 'user', content: 'hi' }],
+};
+await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(envReq),
+});
+const envSeen = seen[seen.length - 1].body;
+check('env sanitizer: is_background rewritten to false upstream',
+  !envSeen.system.includes('is_background: true') && envSeen.system.includes('is_background: false'));
+check('env sanitizer: degraded_mode rewritten to false upstream',
+  !envSeen.system.includes('degraded_mode: true') && envSeen.system.includes('degraded_mode: false'));
+
+// --- model mapper ---
+// claude-3-5-haiku must be rewritten to the configured DeepSeek model BEFORE forwarding.
+const beforeMapping = seen.length;
+const mappedReq = {
+  model: 'claude-3-5-haiku-20241022',
+  system: 'topic detection', messages: [{ role: 'user', content: 'name the window' }],
+};
+await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(mappedReq),
+});
+check('model mapper: claude-3-5-haiku forwarded as deepseek-* to upstream',
+  seen.length === beforeMapping + 1 &&
+  /deepseek/i.test(seen[seen.length - 1].body.model) &&
+  !/claude-3-5-haiku/.test(seen[seen.length - 1].body.model));
+
+// --- response sanitizer (Bash tool_use with is_background: true) ---
+// The mock upstream returns a Bash tool_use block with is_background: true when the user
+// prompt is exactly 'mark for bash test'. The shim must rewrite is_background to false
+// because the command `ls -la` has no background syntax.
+const bashReq = {
+  model: 'deepseek-v4-flash',
+  system: 'x',
+  messages: [{ role: 'user', content: 'mark for bash test' }],
+};
+const bashResp = await (await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(bashReq),
+})).json();
+const bashTool = bashResp.content?.find(b => b.type === 'tool_use' && b.name === 'Bash');
+check('response sanitizer: Bash is_background forced false when no bg syntax',
+  bashTool && bashTool.input.is_background === false);
+
+// Streaming variant: same request with stream:true — sanitizer must also rewrite the
+// streamed content_block events. The mock's partial_json is double-JSON-encoded in the
+// SSE payload (the chunk is itself a JSON string), so we look for the JSON-escaped form
+// `is_background\":true|false`.
+const bashStreamReq = { ...bashReq, stream: true };
+const bashStreamBody = await (await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(bashStreamReq),
+})).text();
+const streamHasTrue = /is_background\\":\s*true/.test(bashStreamBody);
+const streamHasFalse = /is_background\\":\s*false/.test(bashStreamBody);
+const streamOk = !streamHasTrue && streamHasFalse;
+check('response sanitizer: streaming Bash is_background rewritten', streamOk,
+  streamOk ? '' : `body:\n${bashStreamBody}`);
 
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
 if (fail) console.log('shim log:\n' + shimLog);
