@@ -157,9 +157,13 @@ function mergeConfig() {
     return;
   }
   let live, base;
+  // Strip a UTF-8 BOM before parsing — a config.json written by PowerShell's
+  // `Set-Content -Encoding utf8` carries one and is unparseable to JSON.parse even
+  // though it looks perfectly valid in an editor.
+  const readJson = (p) => JSON.parse(readFileSync(p, 'utf8').replace(/^﻿/, ''));
   try {
-    live = JSON.parse(readFileSync(livePath, 'utf8'));
-    base = JSON.parse(readFileSync(basePath, 'utf8'));
+    live = readJson(livePath);
+    base = readJson(basePath);
   } catch (e) { warn(`config merge skipped (unparseable JSON): ${e.message}`); return; }
   const added = [];
   (function merge(dst, src, path = '') {
