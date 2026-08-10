@@ -112,6 +112,9 @@
     "promptVersion": "v2",
     "maxTokens": 1500,
     "timeoutMs": 120000,
+    "cacheMaxAgeDays": 90,
+    "cacheMaxEntries": 5000,
+    "_cacheSweepNote": "Vision descriptions are cached forever otherwise. A daily sweep deletes entries older than cacheMaxAgeDays, then LRU-evicts down to cacheMaxEntries if still over. 0 disables either check.",
     "rates": {
       "inUsdPerM": 0.25,
       "outUsdPerM": 1.5

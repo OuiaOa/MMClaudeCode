@@ -26,7 +26,10 @@ fs.writeFileSync(path.join(CONFIG_DIR, 'deepinfra-key'), 'di-test-key');
 
 const VISION_PORT = 9912;
 
-const realCfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config/claude-dsv4f/config.json'), 'utf8'));
+// The repo's own shipped default, not the machine's live ~/.config/claude-dsv4f/config.json —
+// the suite must pass on a fresh checkout (a new contributor, CI, a worktree with no install
+// on the box at all), not only on a machine that already has this tool set up.
+const realCfg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'config.default.json'), 'utf8'));
 // Resolve the shim next to this test, so a worktree tests its own code and not the install.
 const cfg = {
   ...realCfg,
@@ -531,6 +534,15 @@ const beforeDiff = visionCalls;
 await send(focusImg(F1, 'VISION: read the score counter in the top right'));
 check('different focus on same image is a distinct cache entry', visionCalls === beforeDiff + 1);
 
+// Regression: two concurrent requests carrying the identical (never-before-seen) image both
+// used to miss the cache and each pay for their own vision call — routine with parallel
+// subagents re-sending the same screenshot before either's description is cached yet.
+const F3 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPjPwAAEDAIA/isKoAAAAABJRU5ErkJggg==';
+const beforeConcurrent = visionCalls;
+await Promise.all([send(imgMsg(F3)), send(imgMsg(F3))]);
+check('concurrent requests for the same never-seen image share one in-flight vision call',
+  visionCalls === beforeConcurrent + 1, `extra calls=${visionCalls - beforeConcurrent}`);
+
 r = await send(msg({ system: 'You are a coding agent.' }));
 check('hint appended to a string system prompt',
   /VISION: <what to look for>/.test(String(r.last?.body?.system || '')), String(r.last?.body?.system).slice(0, 120));
@@ -550,7 +562,20 @@ const callsAtCap = visionCalls;
 r = await send(imgMsg('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAgH/q842iQAAAABJRU5ErkJggg=='));
 const capSent = JSON.stringify(r.last?.body);
 check('vision cap blocks NEW descriptions', visionCalls === callsAtCap, `extra calls=${visionCalls - callsAtCap}`);
-check('capped image degrades to a clear note, not an error', r.status === 200 && /daily vision cap/.test(capSent), capSent.slice(0, 160));
+check('capped image degrades to a clear note, not an error', r.status === 200 && /vision spending cap reached/.test(capSent), capSent.slice(0, 160));
+// Regression: the placeholder text must be the same fixed phrase every time the SAME failure
+// class recurs — not the live "spent ~$X.XXXX" figure — or DeepSeek's prompt-prefix cache
+// gets busted on every single turn for as long as the cap stays hit. Failures are never
+// written to the persistent cache, so this second call re-hits the live cap check exactly
+// like the first did.
+const secondCapped = await send(imgMsg('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAgH/q842iQAAAABJRU5ErkJggg=='));
+const extractPlaceholder = (body) => {
+  const m = String(body).match(/description unavailable[^"]*/);
+  return m?.[0];
+};
+check('capped placeholder text is byte-stable across repeats (preserves the prompt-prefix cache)',
+  extractPlaceholder(capSent) === extractPlaceholder(JSON.stringify(secondCapped.last?.body)),
+  `${extractPlaceholder(capSent)} vs ${extractPlaceholder(JSON.stringify(secondCapped.last?.body))}`);
 check('coding request still succeeds when vision is capped', r.status === 200);
 // A cached image costs nothing, so it must keep working past the cap.
 r = await send(imgMsg());

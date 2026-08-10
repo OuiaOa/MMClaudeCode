@@ -669,6 +669,50 @@ if (VISION.enabled) {
   try { fs.mkdirSync(VISION_CACHE_DIR, { recursive: true, mode: 0o700 }); } catch { /* non-fatal */ }
 }
 
+/**
+ * Vision-cache entries — one small JSON file per unique (image, focus, model, promptVersion)
+ * description — otherwise accumulate forever. A plain LRU-by-mtime sweep: delete anything
+ * older than cacheMaxAgeDays, then if the count is still over cacheMaxEntries, delete the
+ * oldest until it isn't. Best-effort throughout — the cache is disposable by design (a miss
+ * just costs one more vision call), so any failure here means slightly more disk used until
+ * the next sweep, never a correctness problem.
+ */
+function sweepVisionCache() {
+  if (!VISION.enabled) return;
+  const maxAgeDays = VISION.cacheMaxAgeDays ?? 90;
+  const maxEntries = VISION.cacheMaxEntries ?? 5000;
+  let files;
+  try { files = fs.readdirSync(VISION_CACHE_DIR).filter(f => f.endsWith('.json')); }
+  catch { return; }
+
+  const stated = [];
+  for (const f of files) {
+    const p = path.join(VISION_CACHE_DIR, f);
+    try { stated.push({ p, mtime: fs.statSync(p).mtimeMs }); } catch { /* raced with a concurrent delete */ }
+  }
+
+  let removed = 0;
+  const kept = [];
+  if (maxAgeDays > 0) {
+    const cutoff = Date.now() - maxAgeDays * 86400000;
+    for (const s of stated) {
+      if (s.mtime < cutoff) { try { fs.unlinkSync(s.p); removed++; } catch {} }
+      else kept.push(s);
+    }
+  } else {
+    kept.push(...stated);
+  }
+
+  if (maxEntries > 0 && kept.length > maxEntries) {
+    kept.sort((a, b) => a.mtime - b.mtime); // oldest first
+    for (const s of kept.slice(0, kept.length - maxEntries)) {
+      try { fs.unlinkSync(s.p); removed++; } catch {}
+    }
+  }
+
+  if (removed) log(`vision-cache: swept ${removed} stale/excess entr${removed === 1 ? 'y' : 'ies'}`);
+}
+
 const VISION_SYSTEM =
   'You are the eyes of a coding agent that cannot see images. It acts on your words alone and can ' +
   'never look at the image itself, so anything you omit is invisible to it.\n' +
@@ -745,12 +789,29 @@ function visionSpendToday() { return spendToday('deepinfra'); }
 // Claude Code resends the whole conversation each turn, so the same images are hashed over and
 // over: measured ~1.9ms per 4MB image, per turn, per image. Memoised on a cheap fingerprint.
 // Only the resulting hex digest is retained — never the image bytes.
+//
+// The fingerprint samples five windows spread across the whole string (not just the two ends)
+// plus the exact length. A two-point (first/last-64) fingerprint could in principle be matched
+// by two genuinely different images that happen to share a header/footer (some formats do), which
+// would silently serve one image's cached description for another. Five independent windows
+// spread across the full length, all needing to agree by coincidence, is not something real,
+// distinct images plausibly hit — while this is still O(1) per call, not proportional to image
+// size, so it keeps the performance property the memo exists for.
 const hashMemo = new Map();
 const HASH_MEMO_MAX = 256;
 
+function cheapFingerprint(data) {
+  const n = data.length;
+  const WIN = 32;
+  const windowAt = (frac) => {
+    const start = Math.max(0, Math.min(n - WIN, Math.floor(n * frac)));
+    return data.slice(start, start + WIN);
+  };
+  return `${n}:${windowAt(0)}:${windowAt(0.25)}:${windowAt(0.5)}:${windowAt(0.75)}:${data.slice(-WIN)}`;
+}
+
 function imageHash(mediaType, data, focus) {
-  const fingerprint = `${data.length}:${data.slice(0, 64)}:${data.slice(-64)}` +
-                      `|${VISION.promptVersion || 'v1'}|${VISION.model}|${mediaType}|${focus || ''}`;
+  const fingerprint = `${cheapFingerprint(data)}|${VISION.promptVersion || 'v1'}|${VISION.model}|${mediaType}|${focus || ''}`;
   const memo = hashMemo.get(fingerprint);
   if (memo) return memo;
   const hex = crypto.createHash('sha256')
@@ -760,6 +821,18 @@ function imageHash(mediaType, data, focus) {
   if (hashMemo.size >= HASH_MEMO_MAX) hashMemo.clear();
   hashMemo.set(fingerprint, hex);
   return hex;
+}
+
+/** Fixed, cache-friendly phrasing per failure class — see the call site for why this must
+ *  never embed the live error detail (a $ figure, HTTP body, timeout duration, ...). */
+function visionErrorLabel(errCode) {
+  if (errCode === 'no-key') return 'no vision API key configured';
+  if (errCode === 'cap') return "today's vision spending cap reached";
+  if (errCode === 'empty') return 'the vision model returned nothing';
+  if (errCode === 'timeout') return 'the vision request timed out';
+  if (errCode === 'network') return 'a network error reached the vision provider';
+  if (typeof errCode === 'string' && errCode.startsWith('http-')) return `the vision provider returned ${errCode.slice(5)}`;
+  return 'an error occurred';
 }
 
 // Concurrent requests for the exact same image (routine with parallel subagents each
@@ -785,7 +858,7 @@ async function describeImageUncached(key, mediaType, b64, focus) {
     return { text: c.text, cached: true, cost: 0 };
   } catch { /* cache miss */ }
 
-  if (!DEEPINFRA_KEY) return { text: null, cached: false, cost: 0, err: 'no DeepInfra key configured' };
+  if (!DEEPINFRA_KEY) return { text: null, cached: false, cost: 0, errCode: 'no-key', err: 'no DeepInfra key configured' };
 
   // Cap applies only to NEW descriptions. A cache hit above returns before this point, so
   // images already seen keep working all day at zero cost.
@@ -794,8 +867,13 @@ async function describeImageUncached(key, mediaType, b64, focus) {
   // figure and all pass a cap that a single one of them would have tripped.
   const spent = visionSpendToday() + visionReserved;
   if (cap > 0 && spent >= cap) {
+    // errCode is the client-facing (and DeepSeek-prompt-facing) text — deliberately static.
+    // err carries the live $ figure for the shim's own log only; embedding it in the prompt
+    // would make the placeholder a little different on every single call for as long as the
+    // cap stays hit, busting DeepSeek's prompt-prefix cache turn after turn during exactly
+    // the situation (a sustained cap outage) where cost predictability matters most.
     return {
-      text: null, cached: false, cost: 0,
+      text: null, cached: false, cost: 0, errCode: 'cap',
       err: `daily vision cap of $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}); raise with: dsv4f-cap vision <amount>`,
     };
   }
@@ -836,9 +914,14 @@ async function describeImageUncached(key, mediaType, b64, focus) {
     });
     const raw = await res.text();
     let j = null; try { j = JSON.parse(raw); } catch { /* non-json */ }
-    if (!res.ok) return { text: null, cached: false, cost: 0, err: `HTTP ${res.status} ${(j?.error?.message || raw).slice(0, 140)}` };
+    if (!res.ok) {
+      return {
+        text: null, cached: false, cost: 0, errCode: `http-${res.status}`,
+        err: `HTTP ${res.status} ${(j?.error?.message || raw).slice(0, 140)}`,
+      };
+    }
     const text = j?.choices?.[0]?.message?.content || '';
-    if (!text) return { text: null, cached: false, cost: 0, err: 'empty description' };
+    if (!text) return { text: null, cached: false, cost: 0, errCode: 'empty', err: 'empty description' };
     const u = j?.usage || {};
     const r = visionRates();
     // MEASURED 2026-08-06: DeepInfra under-reports completion_tokens for proxied Gemini —
@@ -878,7 +961,11 @@ async function describeImageUncached(key, mediaType, b64, focus) {
     });
     return { text, cached: false, cost };
   } catch (e) {
-    return { text: null, cached: false, cost: 0, err: e.message.slice(0, 140) };
+    // e.message can carry timing/connection-specific detail (a timeout's remaining-ms, a
+    // socket's local port, etc.) that differs call to call even for the same underlying
+    // outage — keep it in the log, not in errCode.
+    const errCode = e.name === 'TimeoutError' || e.name === 'AbortError' ? 'timeout' : 'network';
+    return { text: null, cached: false, cost: 0, errCode, err: e.message.slice(0, 140) };
   } finally {
     visionReserved = Math.max(0, visionReserved - VISION_RESERVE_USD);
   }
@@ -948,9 +1035,16 @@ async function substituteImages(body) {
       type: 'text',
       text: d.text
         ? `[${label} — transcribed by ${VISION.model}; the coding model cannot see images]\n${d.text}\n[end ${label}]`
-        : `[${label} — description unavailable: ${d.err}. Ask the user to describe it.]`,
+        // Stable, errCode-derived wording only — not d.err. d.err carries live detail (a $
+        // figure, an HTTP body snippet, a timeout's remaining-ms) that can differ call to
+        // call even for the identical underlying failure; embedding that in the prompt would
+        // make this placeholder text different on every turn for as long as the failure
+        // persists, busting DeepSeek's prompt-prefix cache turn after turn during exactly the
+        // situation (a sustained outage or a capped day) where staying cache-friendly matters
+        // most. The full detail is still logged below for whoever's watching the shim.
+        : `[${label} — description unavailable (${visionErrorLabel(d.errCode)}). Ask the user to describe it.]`,
     };
-    if (!d.text) failed++;
+    if (!d.text) { failed++; if (d.err) vlog(`vision failure detail (image ${n + 1}): ${d.err}`); }
   });
   return { images: jobs.length, cached, cost, failed, directed };
 }
@@ -1596,6 +1690,11 @@ server.listen(PORT, BIND, () => {
   // solve for the real cache-hit ratio. Idle hours only get a slow heartbeat.
   pollBalance();
   setInterval(pollBalance, (cfg.balance?.idlePollSeconds ?? 3600) * 1000).unref?.();
+
+  // Once a day is plenty for a directory that only grows from normal use — this just keeps
+  // it bounded, not fresh.
+  sweepVisionCache();
+  setInterval(sweepVisionCache, 24 * 3600 * 1000).unref?.();
 });
 
 process.on('SIGTERM', () => { log('shutting down'); server.close(() => process.exit(0)); });
