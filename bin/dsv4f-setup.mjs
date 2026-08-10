@@ -67,6 +67,17 @@ spawnSync(node, [path.join(ROOT, 'probe.mjs')], { stdio: 'inherit' });
 // profile
 const port = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).port || 8788;
 const statusline = WIN ? undefined : { type: 'command', command: path.join(ROOT, 'statusline.sh'), refreshInterval: 10 };
+
+// deny-list.sh ships with the package (a PreToolUse guardrail — bypassPermissions mode has
+// no other check on destructive commands) but never overwrite a hand-tuned copy, matching
+// how config.json is handled below.
+const denyListDst = path.join(PROFILE_DIR, 'deny-list.sh');
+const denyListSrc = path.join(ROOT, 'deny-list.sh');
+if (!WIN && fs.existsSync(denyListSrc) && !fs.existsSync(denyListDst)) {
+  fs.copyFileSync(denyListSrc, denyListDst);
+  try { fs.chmodSync(denyListDst, 0o755); } catch { /* no-op on Windows filesystems */ }
+}
+
 const settings = {
   env: {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
@@ -83,6 +94,15 @@ const settings = {
     CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: '1',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK: '1',
+    // The auto-mode fast-mode availability probe and the main-classifier fallback both call
+    // api.anthropic.com directly regardless of ANTHROPIC_BASE_URL, per llm-gateway-connect.md
+    // — there is no Anthropic account behind this profile to answer them, so disable the
+    // paths that would otherwise stall or fail against it. Point what auto-mode classifying
+    // DOES run through the shim at the cheap background sentinel instead of full price.
+    CLAUDE_CODE_DISABLE_FAST_MODE: '1',
+    CLAUDE_CODE_TWO_STAGE_CLASSIFIER: '0',
+    CLAUDE_CODE_SKIP_FAST_MODE_NETWORK_ERRORS: '1',
+    CLAUDE_CODE_BG_CLASSIFIER_MODEL: 'deepseek-v4-flash-bg',
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: '384000',
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '600000',
@@ -98,11 +118,57 @@ const settings = {
   // change this to 'acceptEdits' (auto-approves common fs ops) or 'default' (manual).
   permissions: { defaultMode: 'bypassPermissions' },
   ...(statusline ? { statusLine: statusline } : {}),
+  ...(fs.existsSync(denyListDst) ? {
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `bash ${denyListDst}`, timeout: 5 }] }] },
+  } : {}),
 };
+
 const sPath = path.join(PROFILE_DIR, 'settings.json');
-fs.writeFileSync(sPath, JSON.stringify(settings, null, 2) + '\n');
+if (!fs.existsSync(sPath)) {
+  fs.writeFileSync(sPath, JSON.stringify(settings, null, 2) + '\n');
+  console.log(bold(`Wrote ${sPath}`));
+} else {
+  // Re-running setup (a "reinstall", or picking up a new dsv4f version's defaults) used to
+  // blindly overwrite this file, silently destroying anything hand-tuned in it — including,
+  // on at least one box, the statusLine and deny-list hook wiring themselves, which existed
+  // there only because an earlier session added them directly rather than through this
+  // script. Merge new/missing keys in instead; never touch a key that's already set,
+  // including nested ones (a new env var lands even if `env` itself is already customized).
+  let live;
+  try { live = JSON.parse(fs.readFileSync(sPath, 'utf8').replace(/^﻿/, '')); }
+  catch (e) { console.error(yel(`settings.json merge skipped (unparseable JSON): ${e.message}`)); live = null; }
+  if (live) {
+    const added = [];
+    (function merge(dst, src, keyPath = '') {
+      for (const [k, v] of Object.entries(src)) {
+        const here = keyPath ? `${keyPath}.${k}` : k;
+        if (!(k in dst)) { dst[k] = v; added.push(here); }
+        else if (v && typeof v === 'object' && !Array.isArray(v) &&
+                 dst[k] && typeof dst[k] === 'object' && !Array.isArray(dst[k])) merge(dst[k], v, here);
+      }
+    })(live, settings);
+    // hooks.PreToolUse is an array — the generic merge above only fills it in when missing
+    // entirely. If it already exists (from an earlier setup, or the user's own hook), check
+    // for our specific entry by command string and append rather than duplicate or clobber.
+    if (fs.existsSync(denyListDst)) {
+      live.hooks ??= {};
+      live.hooks.PreToolUse ??= [];
+      const already = live.hooks.PreToolUse.some(h =>
+        Array.isArray(h?.hooks) && h.hooks.some(hh => String(hh?.command || '').includes('deny-list.sh')));
+      if (!already) {
+        live.hooks.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: `bash ${denyListDst}`, timeout: 5 }] });
+        added.push('hooks.PreToolUse[deny-list]');
+      }
+    }
+    if (added.length) {
+      fs.writeFileSync(sPath, JSON.stringify(live, null, 2) + '\n');
+      console.log(bold(`${sPath}: added ${added.length} new key(s): ${added.join(', ')}`));
+    } else {
+      console.log(`${sPath}: already up to date`);
+    }
+  }
+}
 try { fs.chmodSync(sPath, 0o600); } catch { /* Windows */ }   // embeds the sentinel
-console.log(bold(`Wrote ${sPath}`));
 
 // autostart
 if (!WIN && spawnSync('systemctl', ['--user', '--version'], { stdio: 'ignore' }).status === 0) {
