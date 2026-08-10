@@ -379,8 +379,6 @@ function responseReasoningSanitizer(response) {
   }
 }
 
-const BG_PARTIAL_RE = /"is_background"\s*:\s*true(?=[,\s}\]])/g;
-
 /**
  * Incremental SSE sanitizer.
  *
@@ -493,9 +491,19 @@ class SseSanitizer {
     if (h.json) {
       let fixed = h.json;
       if (h.name === 'Bash') {
-        let cmd = '';
-        try { cmd = String(JSON.parse(h.json)?.command || ''); } catch { /* partial JSON */ }
-        if (!BG_SYNTAX_RE.test(cmd)) fixed = h.json.replace(BG_PARTIAL_RE, '"is_background":false');
+        // content_block_stop means every delta for this block landed, so h.json is complete,
+        // valid JSON at this point — parse and mutate it rather than pattern-matching the raw
+        // text. A text-level regex here would also match `"is_background":true` if it happens
+        // to appear inside the command STRING itself (e.g. a command that writes or greps JSON
+        // shaped like that), corrupting the command instead of the tool_use flag.
+        try {
+          const input = JSON.parse(h.json);
+          const cmd = String(input?.command || '');
+          if (input?.is_background === true && !BG_SYNTAX_RE.test(cmd)) {
+            input.is_background = false;
+            fixed = JSON.stringify(input);
+          }
+        } catch { /* not the complete-JSON shape we expected — leave untouched rather than guess */ }
       }
       // DeepSeek-R1 sometimes leaks <think> spans into tool arguments.
       fixed = fixed.replace(THINK_TAG_RE, '');
@@ -754,8 +762,23 @@ function imageHash(mediaType, data, focus) {
   return hex;
 }
 
-async function describeImage(mediaType, b64, focus) {
+// Concurrent requests for the exact same image (routine with parallel subagents each
+// re-sending the same screenshot before either has finished describing — and finished
+// caching — it) used to each miss the cache and each pay for their own vision call. Share
+// one in-flight request per (image, focus) key instead of racing separate ones.
+const inFlightDescribes = new Map(); // imageHash key -> Promise
+
+function describeImage(mediaType, b64, focus) {
   const key = imageHash(mediaType, b64, focus);
+  const existing = inFlightDescribes.get(key);
+  if (existing) return existing;
+  const promise = describeImageUncached(key, mediaType, b64, focus)
+    .finally(() => inFlightDescribes.delete(key));
+  inFlightDescribes.set(key, promise);
+  return promise;
+}
+
+async function describeImageUncached(key, mediaType, b64, focus) {
   const cacheFile = path.join(VISION_CACHE_DIR, `${key}.json`);
   try {
     const c = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
@@ -825,7 +848,15 @@ async function describeImage(mediaType, b64, focus) {
     const reportedOut = u.completion_tokens || 0;
     const estimatedOut = Math.ceil(text.length / 4);
     const billedOut = Math.max(reportedOut, estimatedOut);
-    const cost = (u.prompt_tokens || 0) / 1e6 * r.inUsdPerM + billedOut / 1e6 * r.outUsdPerM;
+    // A provider that under-reports one usage field is not a safe source of truth for the
+    // other. prompt_tokens had no floor at all — only text we know we sent (system + ask;
+    // the image itself adds more, unknowable without provider-specific tiling info, so this
+    // is a partial floor, not a full one) but enough to catch prompt_tokens coming back
+    // implausibly low or zero instead of silently trusting it.
+    const reportedIn = u.prompt_tokens || 0;
+    const estimatedInFloor = Math.ceil((VISION_SYSTEM.length + ask.length) / 4);
+    const billedIn = Math.max(reportedIn, estimatedInFloor);
+    const cost = billedIn / 1e6 * r.inUsdPerM + billedOut / 1e6 * r.outUsdPerM;
 
     try { fs.writeFileSync(cacheFile, JSON.stringify({ model: VISION.model, at: new Date().toISOString(), mediaType, focus, text }), { mode: 0o600 }); }
     catch { /* cache write failure is non-fatal */ }
@@ -836,7 +867,9 @@ async function describeImage(mediaType, b64, focus) {
       slot: 'vision', effort: 'n/a', effortWhy: 'vision',
       provider: 'deepinfra', model: VISION.model,
       status: 200, streaming: false, durationMs: Date.now() - started,
-      inputTokens: u.prompt_tokens || 0, outputTokens: billedOut,
+      inputTokens: billedIn, outputTokens: billedOut,
+      inputTokensReported: reportedIn, inputTokensFloor: estimatedInFloor,
+      inputEstimated: billedIn !== reportedIn,
       outputTokensReported: reportedOut, outputTokensEstimated: estimatedOut,
       outputEstimated: billedOut !== reportedOut,
       cacheReadTokens: null, cacheCreationTokens: null, exact: true,
@@ -1488,10 +1521,20 @@ const server = http.createServer((req, res) => {
   // routine for source files containing emoji, smart quotes or accented names.
   const chunks = [];
   let size = 0;
+  let oversized = false;
   const maxBytes = cfg.limits?.maxRequestBytes ?? (32 * 1024 * 1024);
   req.on('data', (d) => {
+    if (oversized) return; // already rejected; ignore the rest of the body
     size += d.length;
-    if (size > maxBytes) { apiError(res, 413, 'claude-dsv4f: request too large'); req.destroy(); return; }
+    if (size > maxBytes) {
+      oversized = true;
+      apiError(res, 413, 'claude-dsv4f: request too large');
+      // req/res share one socket: destroying req immediately can cut the 413 response off
+      // mid-write, so the client sees a bare connection reset instead of the JSON error.
+      // Waiting for the response to actually finish sending avoids that race.
+      res.once('finish', () => req.destroy());
+      return;
+    }
     chunks.push(d);
   });
   req.on('end', () => {

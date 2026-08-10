@@ -101,6 +101,12 @@ const mock = http.createServer((req, res) => {
       return '';
     })();
     const wantsBashTest = lastUserText.trim() === 'mark for bash test';
+    // Regression hook: the command STRING VALUE itself contains the literal text
+    // `"is_background":true` (as if the agent were writing a JSON file). The old streaming
+    // sanitizer did a raw text-level regex replace over the whole accumulated tool_use JSON,
+    // which would have mangled this occurrence too, even though it's inside a string value,
+    // not the actual is_background key.
+    const wantsBashCorruptionTest = lastUserText.trim() === 'mark for bash corruption test';
 
     if (body.stream) {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -116,6 +122,19 @@ const mock = http.createServer((req, res) => {
         res.write('event: content_block_delta\ndata: ' + JSON.stringify({
           type: 'content_block_delta', index: 0,
           delta: { type: 'input_json_delta', partial_json: '{"command":"ls -la","is_background":true}' },
+        }) + '\n\n');
+        res.write('event: content_block_stop\ndata: ' + JSON.stringify({ type: 'content_block_stop', index: 0 }) + '\n\n');
+        res.write('event: message_delta\ndata: ' + JSON.stringify({ type: 'message_delta', usage: { output_tokens: 10 } }) + '\n\n');
+      } else if (wantsBashCorruptionTest) {
+        const cmd = 'echo \'{"is_background":true}\' > /tmp/config.json';
+        const inputJson = JSON.stringify({ command: cmd, is_background: true });
+        res.write('event: content_block_start\ndata: ' + JSON.stringify({
+          type: 'content_block_start', index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_bash2', name: 'Bash', input: {} },
+        }) + '\n\n');
+        res.write('event: content_block_delta\ndata: ' + JSON.stringify({
+          type: 'content_block_delta', index: 0,
+          delta: { type: 'input_json_delta', partial_json: inputJson },
         }) + '\n\n');
         res.write('event: content_block_stop\ndata: ' + JSON.stringify({ type: 'content_block_stop', index: 0 }) + '\n\n');
         res.write('event: message_delta\ndata: ' + JSON.stringify({ type: 'message_delta', usage: { output_tokens: 10 } }) + '\n\n');
@@ -714,6 +733,21 @@ const streamHasFalse = /is_background\\":\s*false/.test(bashStreamBody);
 const streamOk = !streamHasTrue && streamHasFalse;
 check('response sanitizer: streaming Bash is_background rewritten', streamOk,
   streamOk ? '' : `body:\n${bashStreamBody}`);
+
+// Regression: a Bash command whose own text contains `"is_background":true` must not have
+// that occurrence mangled by the sanitizer — only the actual is_background key changes.
+const corruptionReq = { model: 'deepseek-v4-flash', system: 'x', stream: true,
+  messages: [{ role: 'user', content: 'mark for bash corruption test' }] };
+const corruptionBody = await (await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(corruptionReq),
+})).text();
+const jsonLine = corruptionBody.split('\n').find(l => l.startsWith('data:') && l.includes('input_json_delta'));
+const parsedInput = jsonLine ? JSON.parse(JSON.parse(jsonLine.slice(5)).delta.partial_json) : null;
+check('response sanitizer: is_background key rewritten to false',
+  parsedInput?.is_background === false, JSON.stringify(parsedInput));
+check('response sanitizer: literal "is_background":true INSIDE the command string survives untouched',
+  parsedInput?.command === 'echo \'{"is_background":true}\' > /tmp/config.json', parsedInput?.command);
 
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
 if (fail) console.log('shim log:\n' + shimLog);
