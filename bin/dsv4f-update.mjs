@@ -181,7 +181,22 @@ function mergeConfig() {
   }
 }
 
-/** Replace the shim only when it is idle — a mid-request kill costs a live turn. */
+/**
+ * Replace the running shim with the just-deployed code.
+ *
+ * The shim's own SIGTERM handler exits 0 (server.close then process.exit(0)) — correct
+ * behavior for a well-behaved service, but it means systemd sees ANY SIGTERM, whoever sent
+ * it, as a clean stop. Restart=on-failure therefore never fires for a bare `kill`: this used
+ * to leave the OLD process (and OLD code, permanently, until something else restarted it —
+ * e.g. a reboot) still bound to the port while this function logged a false "restarts on next
+ * use". Going through `systemctl --user restart` sidesteps that entirely — it performs its
+ * own stop+start regardless of exit status, so it always actually replaces the process.
+ *
+ * The previous fallback (`lsof -ti tcp:$port | xargs kill`) also killed EVERY process with a
+ * socket on that port, not just the listener — including a live `claude` client mid-session
+ * (lsof -i matches ESTABLISHED connections too, not only LISTEN). Restricted to the listening
+ * socket only, below, for installs without the systemd unit.
+ */
 function restartShim() {
   const port = (() => {
     try { return JSON.parse(readFileSync(join(CONFIG, 'config.json'), 'utf8')).port || 8788; } catch { return 8788; }
@@ -189,10 +204,20 @@ function restartShim() {
   const probe = run(process.execPath, ['-e',
     `fetch('http://127.0.0.1:${port}/health').then(r=>console.log(r.status)).catch(()=>process.exit(3))`], DATA, 15000);
   if (!probe.ok) { log('shim not running — it starts on the new code next time'); return; }
+
+  if (process.platform !== 'win32') {
+    const unit = run('systemctl', ['--user', 'list-unit-files', 'claude-dsv4f-shim.service'], DATA);
+    if (unit.ok && unit.out.includes('claude-dsv4f-shim.service')) {
+      const r = run('systemctl', ['--user', 'restart', 'claude-dsv4f-shim.service'], DATA);
+      log(r.ok ? 'shim restarted via systemd — running the new code' : `systemctl restart failed: ${r.out}`);
+      return;
+    }
+  }
+
   const kill = process.platform === 'win32'
     ? run('powershell.exe', ['-NoProfile', '-Command',
         `Get-NetTCPConnection -LocalPort ${port} -State Listen -EA SilentlyContinue | Select-Object -Expand OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -EA SilentlyContinue }`], DATA)
-    : run('sh', ['-c', `lsof -ti tcp:${port} | xargs -r kill`], DATA);
+    : run('sh', ['-c', `lsof -ti tcp:${port} -sTCP:LISTEN | xargs -r kill`], DATA);
   log(kill.ok ? 'shim stopped — it restarts on the new code on next use' : 'could not stop the shim; restart it yourself');
 }
 

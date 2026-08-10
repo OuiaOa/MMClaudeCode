@@ -1071,6 +1071,19 @@ function apiError(res, status, message, type = 'invalid_request_error') {
   sendJson(res, status, { type: 'error', error: { type, message } });
 }
 
+/**
+ * Terminal SSE `error` event for a stream that dies mid-flight (upstream connection reset
+ * after 200 headers were already relayed, so a fresh JSON error response is no longer
+ * possible). This is the same event shape the Anthropic API itself uses for a mid-stream
+ * failure (e.g. overloaded_error) — official SDKs already know to treat a top-level `event:
+ * error` as terminal, so the client surfaces a real error instead of hanging or silently
+ * truncating the turn.
+ */
+function emitStreamError(res, message) {
+  const payload = { type: 'error', error: { type: 'api_error', message: `claude-dsv4f: ${message}` } };
+  res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
+}
+
 function authOk(req) {
   const auth = req.headers['authorization'] || '';
   const xkey = req.headers['x-api-key'] || '';
@@ -1242,90 +1255,149 @@ async function handleMessages(req, res, rawBody) {
 
   vlog(`-> ${resolved.slot} effort=${effort} (${why}) stream=${streaming} bytes=${outBody.length}${classifierV2 ? ' [classifier]' : ''}`);
 
-  const upReq = UPSTREAM_MOD.request({
-    protocol: UPSTREAM.protocol,
-    hostname: UPSTREAM.hostname,
-    port: UPSTREAM.port || 443,
-    path: `${UPSTREAM.pathname.replace(/\/$/, '')}/v1/messages`,
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${API_KEY}`,
-      'content-type': 'application/json',
-      'content-length': outBody.length,
-      accept: streaming ? 'text/event-stream' : 'application/json',
-    },
-    timeout: 15 * 60 * 1000,
-  }, (upRes) => {
-    const status = upRes.statusCode || 500;
-    const ok = status >= 200 && status < 300;
+  // Auto-mode's two-stage classifier runs against a hard client-side deadline (60s stage-1
+  // budget) and fails CLOSED — a denied tool call, not a retry — when it doesn't get a
+  // response in time. DeepSeek occasionally stalls or drops the connection outright,
+  // especially in its own announced peak window, and a single 15-minute-timeout attempt
+  // burns the whole budget on one shot. Retry classifier requests only, with short
+  // per-attempt timeouts, entirely before any bytes reach the client (headersSent stays
+  // false until a real upstream response arrives) — regular traffic keeps its original
+  // single-attempt behavior so this doesn't change latency or double-billing risk elsewhere.
+  const CLASSIFIER_MAX_ATTEMPTS = 3;
+  const CLASSIFIER_ATTEMPT_TIMEOUT_MS = 12000;
+  const CLASSIFIER_BACKOFF_MS = [250, 750];
 
-    if (ok && streaming) {
-      res.writeHead(status, relayHeaders(upRes.headers));
-      const sniff = new UsageSniffer();
-      // Forward incrementally — see SseSanitizer. Only tool_use argument fragments are
-      // held; text and thinking reach the terminal as DeepSeek produces them.
-      const sanitizer = new SseSanitizer((text) => { res.write(text); });
-      upRes.on('data', (chunk) => {
-        try { sniff.push(chunk); } catch { /* accounting must never break the stream */ }
-        try { sanitizer.push(chunk); }
-        catch { try { res.write(chunk); } catch {} }   // never swallow output on a sanitizer fault
-      });
-      upRes.on('end', () => {
-        try { sanitizer.flush(); } catch {}
-        res.end();
-        record(sniff.usage, resolved.slot, effort, why, status, started, streaming);
-      });
-      upRes.on('error', () => { try { sanitizer.flush(); } catch {} try { res.end(); } catch {} });
-      return;
-    }
-
-    // Non-streaming, or an error we may need to rewrite.
-    const outChunks = [];
-    upRes.on('data', d => { outChunks.push(d); });
-    upRes.on('end', () => {
-      // Decode once: per-chunk toString() corrupts multi-byte characters split across chunks.
-      const buf = Buffer.concat(outChunks).toString('utf8');
-      let out = buf;
-      if (!ok) {
-        out = rewriteError(status, buf);
-        log(`upstream ${status}: ${out.slice(0, 400)}`);
-      } else {
-        try {
-          const parsed = JSON.parse(buf);
-          responseSanitizer(parsed);
-          responseReasoningSanitizer(parsed);
-          out = JSON.stringify(parsed);
-          record(parsed.usage || {}, resolved.slot, effort, why, status, started, streaming);
-        } catch { /* ignore */ }
-      }
-      const b = Buffer.from(out);
-      const headers = relayHeaders(upRes.headers);
-      headers['content-length'] = b.length;
-      res.writeHead(status, headers);
-      res.end(b);
-    });
-  });
-
-  // If the client hangs up (user pressed ESC), stop paying for output nobody will read.
+  let currentUpReq = null;
+  let clientAborted = false;
   res.on('close', () => {
     if (!res.writableEnded) {
       vlog('client disconnected — aborting upstream request');
-      upReq.destroy(new Error('client disconnected'));
+      clientAborted = true;
+      if (currentUpReq) currentUpReq.destroy(new Error('client disconnected'));
     }
   });
 
-  upReq.on('timeout', () => { upReq.destroy(new Error('upstream timeout')); });
-  upReq.on('error', (e) => {
-    log('upstream error:', e.message);
-    if (!res.headersSent) apiError(res, 502, `claude-dsv4f: upstream error: ${e.message}`, 'api_error');
-    else { try { res.end(); } catch {} }
-  });
-  upReq.end(outBody);
+  function sendUpstream(attempt) {
+    const timeoutMs = classifierV2 ? CLASSIFIER_ATTEMPT_TIMEOUT_MS : 15 * 60 * 1000;
+    const upReq = UPSTREAM_MOD.request({
+      protocol: UPSTREAM.protocol,
+      hostname: UPSTREAM.hostname,
+      port: UPSTREAM.port || 443,
+      path: `${UPSTREAM.pathname.replace(/\/$/, '')}/v1/messages`,
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${API_KEY}`,
+        'content-type': 'application/json',
+        'content-length': outBody.length,
+        accept: streaming ? 'text/event-stream' : 'application/json',
+      },
+      timeout: timeoutMs,
+    }, (upRes) => {
+      const status = upRes.statusCode || 500;
+      const ok = status >= 200 && status < 300;
+
+      if (ok && streaming) {
+        res.writeHead(status, relayHeaders(upRes.headers));
+        const sniff = new UsageSniffer();
+        // Forward incrementally — see SseSanitizer. Only tool_use argument fragments are
+        // held; text and thinking reach the terminal as DeepSeek produces them.
+        const sanitizer = new SseSanitizer((text) => { res.write(text); });
+        upRes.on('data', (chunk) => {
+          try { sniff.push(chunk); } catch { /* accounting must never break the stream */ }
+          try { sanitizer.push(chunk); }
+          catch { try { res.write(chunk); } catch {} }   // never swallow output on a sanitizer fault
+        });
+        upRes.on('end', () => {
+          try { sanitizer.flush(); } catch {}
+          res.end();
+          record(sniff.usage, resolved.slot, effort, why, status, started, streaming);
+        });
+        upRes.on('error', () => {
+          try { sanitizer.flush(); } catch {}
+          // Headers are already sent; the client's own stream parser must handle the cut.
+          // Tell it plainly instead of just vanishing — see emitStreamError.
+          try { emitStreamError(res, 'upstream stream error'); } catch {}
+          try { res.end(); } catch {}
+          record(sniff.usage, resolved.slot, effort, why, status, started, streaming);
+        });
+        return;
+      }
+
+      // Non-streaming, or an error we may need to rewrite.
+      const outChunks = [];
+      upRes.on('data', d => { outChunks.push(d); });
+      upRes.on('end', () => {
+        // Decode once: per-chunk toString() corrupts multi-byte characters split across chunks.
+        const buf = Buffer.concat(outChunks).toString('utf8');
+        let out = buf;
+        if (!ok) {
+          out = rewriteError(status, buf);
+          log(`upstream ${status}: ${out.slice(0, 400)}`);
+        } else {
+          try {
+            const parsed = JSON.parse(buf);
+            responseSanitizer(parsed);
+            responseReasoningSanitizer(parsed);
+            out = JSON.stringify(parsed);
+            record(parsed.usage || {}, resolved.slot, effort, why, status, started, streaming);
+          } catch {
+            // 200 but not JSON (or unparsable) — still billed by upstream. Record a
+            // best-effort estimate from the request/response sizes rather than silently
+            // treating it as free; see record()'s fallback-estimate handling below.
+            record(null, resolved.slot, effort, why, status, started, streaming, { outBody, respBytes: buf.length });
+          }
+        }
+        const b = Buffer.from(out);
+        const headers = relayHeaders(upRes.headers);
+        headers['content-length'] = b.length;
+        res.writeHead(status, headers);
+        res.end(b);
+      });
+    });
+    currentUpReq = upReq;
+
+    upReq.on('timeout', () => { upReq.destroy(new Error('upstream timeout')); });
+    upReq.on('error', (e) => {
+      if (clientAborted) return; // client already gone — nothing to retry into
+      if (classifierV2 && attempt < CLASSIFIER_MAX_ATTEMPTS) {
+        vlog(`classifier upstream attempt ${attempt} failed (${e.message}); retrying`);
+        const delay = CLASSIFIER_BACKOFF_MS[attempt - 1] ?? 750;
+        setTimeout(() => sendUpstream(attempt + 1), delay);
+        return;
+      }
+      log('upstream error:', e.message);
+      if (!res.headersSent) apiError(res, 502, `claude-dsv4f: upstream error: ${e.message}`, 'api_error');
+      else { try { res.end(); } catch {} }
+      // Not recorded: a connection-level failure here means no response was ever received
+      // (DNS/connect/handshake/idle-timeout before any bytes), which DeepSeek has nothing to
+      // bill for. The two cases that ARE billable-but-silent (non-JSON 200, mid-stream cut
+      // after headers) are recorded at their own sites above/below.
+    });
+    upReq.end(outBody);
+  }
+
+  sendUpstream(1);
 }
 
-function record(usage, slot, effort, why, status, started, streaming) {
+/**
+ * @param {object|null} usage  Upstream usage object, or null when none was available (a 200
+ *   response that wasn't parseable JSON). null triggers a byte-based fallback estimate from
+ *   bytesHint rather than silently recording the request as free — see callers above.
+ * @param {{outBody?: Buffer, respBytes?: number}} [bytesHint]
+ */
+function record(usage, slot, effort, why, status, started, streaming, bytesHint) {
   const now = new Date();
-  const priced = priceUsage(usage, now);
+  let u = usage;
+  let estimated = false;
+  if (!u) {
+    // ~4 bytes/token is a rough but conservative English/code-text ratio — good enough to
+    // keep the daily cap honest without inventing a false sense of precision.
+    estimated = true;
+    const reqBytes = bytesHint?.outBody?.length ?? 0;
+    const respBytes = bytesHint?.respBytes ?? 0;
+    u = { input_tokens: Math.ceil(reqBytes / 4), output_tokens: Math.ceil(respBytes / 4) };
+  }
+  const priced = priceUsage(u, now);
   const row = {
     ts: now.toISOString(),
     utcHour: now.getUTCHours(),
@@ -1337,11 +1409,12 @@ function record(usage, slot, effort, why, status, started, streaming) {
     status,
     streaming,
     durationMs: Date.now() - started,
-    inputTokens: usage.input_tokens || 0,
-    outputTokens: usage.output_tokens || 0,
+    inputTokens: u.input_tokens || 0,
+    outputTokens: u.output_tokens || 0,
     cacheReadTokens: priced.cacheReadTokens,
     cacheCreationTokens: priced.cacheCreationTokens,
-    exact: priced.exact,
+    exact: priced.exact && !estimated,
+    estimated,
     costUsd: +priced.costUsd.toFixed(8),
     costUsdMin: +priced.costUsdMin.toFixed(8),
     costUsdMax: +priced.costUsdMax.toFixed(8),
@@ -1349,7 +1422,7 @@ function record(usage, slot, effort, why, status, started, streaming) {
   };
   appendLedger(row);
   scheduleSettlePoll();
-  vlog(`<- ${slot} effort=${effort} in=${row.inputTokens} out=${row.outputTokens} ~$${row.costUsdMax.toFixed(5)}`);
+  vlog(`<- ${slot} effort=${effort} in=${row.inputTokens} out=${row.outputTokens} ~$${row.costUsdMax.toFixed(5)}${estimated ? ' (estimated)' : ''}`);
 }
 
 /**
@@ -1453,6 +1526,20 @@ const server = http.createServer((req, res) => {
 
 const PORT = parseInt(process.env.DSV4F_PORT || cfg.port || 8788, 10);
 const BIND = cfg.bind || '127.0.0.1';
+
+// Without this, an EADDRINUSE (leftover process still holding the port, or something else
+// bound to it) is an uncaught 'error' event — Node crashes with a raw stack trace instead of
+// a diagnosis, and systemd's RestartSec=2 spins on it forever since the same bind keeps
+// failing. Exit distinctly so the failure is legible in `journalctl --user -u claude-dsv4f-shim`.
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    console.error(`[dsv4f] FATAL: port ${PORT} is already in use (another shim instance? ` +
+      `check: lsof -i tcp:${PORT}). Not retrying — fix the conflict and restart the service.`);
+  } else {
+    console.error(`[dsv4f] FATAL: server error: ${e.message}`);
+  }
+  process.exit(1);
+});
 
 server.listen(PORT, BIND, () => {
   log(`listening on http://${BIND}:${PORT} -> ${cfg.upstream}`);

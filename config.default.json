@@ -6,6 +6,8 @@
   "balanceUrl": "https://api.deepseek.com/user/balance",
   "modelsUrl": "https://api.deepseek.com/models",
   "model": "deepseek-v4-flash",
+  "fastModel": "deepseek-v4-flash-bg",
+  "_fastModelNote": "modelMapper() rewrites claude-3-5-haiku* (compaction, subagent dispatch, window-topic detection) to this sentinel so resolveModel() slots it as background (effort:none) instead of falling through to `model` at main-slot effort:high — was previously ~25-50x the intended cost for that traffic class.",
   "expectedVersion": "DeepSeek-V4-Flash-0731",
   "sentinels": {
     "deepseek-v4-flash": "main",

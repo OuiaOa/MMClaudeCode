@@ -44,12 +44,49 @@ fs.writeFileSync(path.join(CONFIG_DIR, 'probe-results.json'), JSON.stringify({
 
 // ------------------------------------------------------------------ mock upstream
 const seen = [];
+let classifierRetryAttempts = 0;
 const mock = http.createServer((req, res) => {
   let b = '';
   req.on('data', d => { b += d; });
   req.on('end', () => {
     const body = JSON.parse(b || '{}');
     seen.push({ path: req.url, body, auth: req.headers.authorization });
+
+    // Test hook: a classifier-shaped request carrying this marker fails the connection
+    // (no response at all — simulating a stall/reset) on its first two attempts, then
+    // succeeds on the third. Exercises the shim's classifier-only retry-with-backoff.
+    if (/RETRY_TEST_MARKER/.test(JSON.stringify(body.system ?? ''))) {
+      classifierRetryAttempts++;
+      if (classifierRetryAttempts <= 2) { req.socket.destroy(); return; }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        id: 'msg_retry_ok', type: 'message', role: 'assistant',
+        content: [{ type: 'text', text: 'ok' }],
+        usage: { input_tokens: 50, output_tokens: 5 },
+      }));
+      return;
+    }
+
+    // Test hook: 200 status but a body that isn't JSON — still billed by upstream, must
+    // not be silently treated as free.
+    if (/NON_JSON_200_MARKER/.test(JSON.stringify(body.system ?? ''))) {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('not json, but still a real 200 the provider will bill for');
+      return;
+    }
+
+    // Test hook: a streaming response that sends message_start (with real usage) and then
+    // the connection dies mid-flight, before message_stop — no clean end() ever happens.
+    if (/MID_STREAM_CUTOFF_MARKER/.test(JSON.stringify(body.system ?? ''))) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('event: message_start\ndata: ' + JSON.stringify({
+        type: 'message_start',
+        message: { id: 'msg_cutoff', usage: { input_tokens: 300, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 } },
+      }) + '\n\n');
+      res.write('event: content_block_delta\ndata: ' + JSON.stringify({ type: 'content_block_delta', delta: { text: 'partial' } }) + '\n\n');
+      setImmediate(() => req.socket.destroy());
+      return;
+    }
 
     // Test hook: when the user prompt is "mark for bash test", return a Bash tool_use
     // block with is_background: true. The shim's response sanitizer must override it to
@@ -293,6 +330,48 @@ check('cost is exact when cache split present', streamRow?.exact === true);
 const expected = (1000 / 1e6) * 0.14 + (4000 / 1e6) * 0.0028 + (250 / 1e6) * 0.28;
 check('cost priced correctly', Math.abs(streamRow.costUsd - expected) < 1e-9,
   `got ${streamRow?.costUsd} want ${expected}`);
+
+// Regression: a 200 response upstream is always billed, even when its body isn't JSON
+// (previously swallowed by `catch { /* ignore */ }` with no record() call at all — an
+// undercounted-spend gap in the daily cap). The shim must record a best-effort estimate
+// instead of treating it as free.
+const nonJsonReq = {
+  model: 'deepseek-v4-flash', max_tokens: 100,
+  system: 'NON_JSON_200_MARKER', messages: [{ role: 'user', content: 'hi' }],
+};
+const nonJsonResp = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(nonJsonReq),
+});
+await new Promise(r => setTimeout(r, 100));
+const ledgerAfterNonJson = fs.readFileSync(path.join(DATA_DIR, 'usage.jsonl'), 'utf8')
+  .split('\n').filter(l => l.startsWith('{')).map(l => JSON.parse(l));
+const nonJsonRow = ledgerAfterNonJson[ledgerAfterNonJson.length - 1];
+check('non-JSON 200 still reaches the client', nonJsonResp.status === 200);
+check('non-JSON 200 is recorded (not silently free)', nonJsonRow?.estimated === true && nonJsonRow.costUsdMax > 0,
+  JSON.stringify(nonJsonRow));
+
+// Regression: a stream that dies mid-flight (after headers/message_start, before
+// message_stop) used to end the client connection with no error event and no record() call
+// — invisible both to the client's stream parser and to the spend ledger. The shim must
+// emit a terminal SSE error event and record whatever usage was sniffed before the cut.
+const cutoffReq = {
+  model: 'deepseek-v4-flash', max_tokens: 100, stream: true,
+  system: 'MID_STREAM_CUTOFF_MARKER', messages: [{ role: 'user', content: 'hi' }],
+};
+const cutoffResp = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(cutoffReq),
+});
+const cutoffText = await cutoffResp.text();
+await new Promise(r => setTimeout(r, 100));
+const ledgerAfterCutoff = fs.readFileSync(path.join(DATA_DIR, 'usage.jsonl'), 'utf8')
+  .split('\n').filter(l => l.startsWith('{')).map(l => JSON.parse(l));
+const cutoffRow = ledgerAfterCutoff[ledgerAfterCutoff.length - 1];
+check('mid-stream cutoff: client receives a terminal SSE error event, not a silent hang',
+  cutoffText.includes('event: error'), cutoffText.slice(0, 200));
+check('mid-stream cutoff: usage sniffed before the cut is still recorded',
+  cutoffRow?.inputTokens === 300, JSON.stringify(cutoffRow));
 
 console.log('\n\x1b[1mspend cap\x1b[0m');
 fs.writeFileSync(path.join(CONFIG_DIR, 'cap'), '0.00000001');
@@ -539,6 +618,28 @@ check('classifier mock shouldBlock is false',
 check('classifier mock was NOT forwarded to upstream',
   seen.length === beforeClassifier);
 
+// --- classifier V2: retry-with-backoff on a stalled/reset upstream connection ---
+// This is the incident the shim previously had no defense against: auto-mode's two-stage
+// XML classifier runs against Claude Code's own ~60s fail-closed budget, and a single
+// stalled DeepSeek connection used to surface straight through as a 502 (the harness then
+// denies the tool call, "temporarily unavailable"). The mock fails the first two attempts
+// outright (destroyed connection, no response) and succeeds on the third; the shim must
+// retry transparently and the client must see a normal 200, not an error.
+const retryBefore = seen.length;
+const retryReq = {
+  model: 'deepseek-v4-flash', max_tokens: 100,
+  system: 'permission classifier decision RETRY_TEST_MARKER',
+  messages: [{ role: 'user', content: 'rm -rf /tmp/x' }],
+};
+const retryResp = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(retryReq),
+});
+check('classifier V2: transient upstream failures are retried transparently (200, not 502)',
+  retryResp.status === 200, `got ${retryResp.status}`);
+check('classifier V2: exactly 3 upstream attempts were made (2 failures + 1 success)',
+  seen.length === retryBefore + 3, `got ${seen.length - retryBefore}`);
+
 // --- environment sanitizer ---
 // Send a request whose system contains is_background: true and degraded_mode: true;
 // the shim must rewrite them to false BEFORE forwarding to upstream.
@@ -572,6 +673,15 @@ check('model mapper: claude-3-5-haiku forwarded as deepseek-* to upstream',
   seen.length === beforeMapping + 1 &&
   /deepseek/i.test(seen[seen.length - 1].body.model) &&
   !/claude-3-5-haiku/.test(seen[seen.length - 1].body.model));
+
+// Regression: cfg.fastModel used to be undefined, so modelMapper fell through to cfg.model
+// (the real "deepseek-v4-flash" string) — which resolveModel() then slots as "main" (its own
+// sentinel), landing haiku/background/compaction traffic on effort:high instead of
+// effort:none. That is a ~25-50x cost inflation for traffic that never needed to think at
+// all. Correct behavior: mapped requests carry thinking:disabled (the shim's effort:none
+// encoding), proving they landed on the background slot.
+check('model mapper: haiku traffic lands on background slot (effort:none), not main:high',
+  seen[seen.length - 1].body.thinking?.type === 'disabled');
 
 // --- response sanitizer (Bash tool_use with is_background: true) ---
 // The mock upstream returns a Bash tool_use block with is_background: true when the user
