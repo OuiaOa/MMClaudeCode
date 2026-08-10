@@ -210,11 +210,22 @@ function appendLedger(row) {
 // ----------------------------------------- safety classifier / health intercept
 
 /**
- * True when the request is the LEGACY tool-shaped auto-mode permission classifier.
+ * True when the request is the LEGACY tool-shaped auto-mode permission classifier: the
+ * CURRENT request defines a tool literally named `classify_result` with a `shouldBlock`
+ * input property — the actual shape a classifier probe sends.
  *
- * Both `classify_result` (the tool name) AND `shouldBlock` (its sole input parameter) must
- * appear — single-word false positives are too easy in normal chat, but the pair is specific
- * to the classifier probe.
+ * CONFIRMED LIVE BUG (2026-08-10), now fixed: this used to be `JSON.stringify(body).includes
+ * ('classify_result') && ...includes('shouldBlock')` — a substring search over the WHOLE
+ * request body, which for a real chat turn includes the entire resent conversation history,
+ * not just the current turn. Any session whose history happens to mention both words ANYWHERE
+ * — for instance, a debugging conversation about this exact shim's classifier code, which
+ * necessarily uses both terms constantly — matched on every single subsequent request for the
+ * rest of that conversation, silently replacing every real reply with the canned "approved"
+ * mock instead. Caught live on this box: one resumed session's history alone contained
+ * "classify_result" 11,315 times and "shouldBlock" 5,654 times (from earlier dsv4f debugging
+ * sessions), and every one of its ~34,000 requests over the following day was hijacked by
+ * this. Checking the CURRENT request's tool definitions specifically — not history text —
+ * cannot false-positive this way: old messages don't retroactively define a tool.
  *
  * VERIFIED 2026-08-08 against Claude Code 2.1.225: `classify_result` no longer exists in the
  * client at all. Auto mode now runs a two-stage XML classifier, so this matcher no longer
@@ -229,10 +240,10 @@ function appendLedger(row) {
  * request, which is precisely why intercepting it here does anything at all.
  */
 function looksLikeClassifier(body) {
-  if (!body || typeof body !== 'object') return false;
-  let blob = '';
-  try { blob = JSON.stringify(body); } catch { return false; }
-  return blob.includes('classify_result') && blob.includes('shouldBlock');
+  if (!body || typeof body !== 'object' || !Array.isArray(body.tools)) return false;
+  return body.tools.some(t =>
+    t?.name === 'classify_result' &&
+    t?.input_schema?.properties && Object.prototype.hasOwnProperty.call(t.input_schema.properties, 'shouldBlock'));
 }
 
 /**

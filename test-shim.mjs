@@ -662,6 +662,34 @@ check('classifier mock shouldBlock is false',
 check('classifier mock was NOT forwarded to upstream',
   seen.length === beforeClassifier);
 
+// Regression: a real bug found live on 2026-08-10. The matcher used to be a substring search
+// over the WHOLE stringified body, which includes the entire resent conversation history —
+// not just the current turn. A session that had ever discussed "classify_result" and
+// "shouldBlock" in plain text (e.g. debugging this exact file) matched on EVERY subsequent
+// request for the rest of that conversation, hijacking real replies with the canned mock.
+// Confirmed on this box: one resumed session's history alone contained "classify_result"
+// 11,315 times, and every one of its ~34,000 requests over the following day was intercepted.
+// A normal coding turn whose HISTORY merely mentions both words as text (no actual
+// classify_result tool defined on the CURRENT request) must be forwarded normally.
+const beforePolluted = seen.length;
+const pollutedReq = {
+  model: 'deepseek-v4-flash',
+  system: 'You are Claude Code.',
+  messages: [
+    { role: 'user', content: 'how does the shim\'s classify_result / shouldBlock interceptor work?' },
+    { role: 'assistant', content: 'It matches on classify_result (tool name) and shouldBlock (its parameter)...' },
+    { role: 'user', content: 'ok now fix the bug we just found in shouldBlock handling' },
+  ],
+  // No classify_result tool defined on THIS request — a real coding turn's toolset.
+  tools: [{ name: 'Bash', description: 'run a shell command', input_schema: { properties: { command: {} } } }],
+};
+await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(pollutedReq),
+});
+check('a real turn whose HISTORY mentions classify_result/shouldBlock as text is NOT hijacked',
+  seen.length === beforePolluted + 1, `forwarded=${seen.length - beforePolluted}`);
+
 // --- classifier V2: retry-with-backoff on a stalled/reset upstream connection ---
 // This is the incident the shim previously had no defense against: auto-mode's two-stage
 // XML classifier runs against Claude Code's own ~60s fail-closed budget, and a single
