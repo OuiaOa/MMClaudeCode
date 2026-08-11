@@ -20,6 +20,28 @@ if [[ ! -f "$PROFILE_DIR/settings.json" ]]; then
   exit 1
 fi
 
+# Check GitHub for a newer commit and apply it automatically, bounded so a slow or
+# unreachable network never meaningfully delays startup. `timeout` isn't guaranteed present
+# (notably stock macOS) — fall back to running unbounded rather than fail the whole launch
+# over a missing convenience binary; dsv4f-update.mjs's own internal git-op timeouts (a few
+# minutes) still apply as a backstop in that case.
+run_bounded() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; else "$@"; fi
+}
+UPDATER="$DATA_DIR/bin/dsv4f-update.mjs"
+if [[ -f "$UPDATER" ]]; then
+  # Under `set -e`, a bare command returning non-zero (exit 10 = "update available" is exactly
+  # that) would abort this whole script right here, never reaching the check below — capture
+  # the status via `||` instead of letting the command's own exit propagate directly.
+  check_status=0
+  run_bounded 15 node "$UPDATER" --check >/dev/null 2>&1 || check_status=$?
+  if [[ $check_status -eq 10 ]]; then
+    echo "claude-dsv4f: update available — applying..." >&2
+    run_bounded 120 node "$UPDATER" >&2 || echo "claude-dsv4f: auto-update failed; continuing with the current version" >&2
+  fi
+fi
+
 PORT="$(node -e 'process.stdout.write(String(process.env.DSV4F_PORT || JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port || 8788))' "$CONFIG_DIR/config.json")"
 
 # Make sure the shim is up before handing control to Claude Code.

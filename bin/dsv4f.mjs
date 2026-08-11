@@ -144,29 +144,55 @@ async function cmdStatus() {
   }
 }
 
+// ------------------------------------------------------------------------ auto-update
+
+/**
+ * Checks GitHub for a newer commit and applies it automatically, bounded so a slow or
+ * unreachable network never meaningfully delays startup: --check is a single `git fetch`
+ * (fast — 15s is generous, and covers the one-time initial clone if the update cache doesn't
+ * exist yet) with no local mutation; the full update (reset + copy + test suite + restart)
+ * only runs when one is actually available, with more generous headroom since it only pays
+ * that cost on a real update, not every launch. Both timeouts fail SAFE: dsv4f-update.mjs
+ * itself already treats "offline" as "keep the installed version" (exit 0, not an error), and
+ * a killed/timed-out check here is treated identically — this must never block using the tool.
+ */
+function autoUpdateCheck() {
+  const updater = path.join(DATA_DIR, 'bin', 'dsv4f-update.mjs');
+  if (!fs.existsSync(updater)) return;   // portable/tarball install predating the updater
+  const check = spawnSync(process.execPath, [updater, '--check'], { stdio: 'ignore', timeout: 15000 });
+  if (check.status === 10) {
+    console.error('dsv4f: update available — applying...');
+    const apply = spawnSync(process.execPath, [updater], { stdio: 'inherit', timeout: 120000 });
+    if (apply.status !== 0) console.error('dsv4f: auto-update failed; continuing with the current version');
+  }
+}
+
 // ------------------------------------------------------------------------ run
 
 async function cmdRun(rest) {
   if (!fs.existsSync(path.join(CONFIG_DIR, 'key'))) die("No DeepSeek key stored. Run: dsv4f setup");
   if (!fs.existsSync(path.join(PROFILE_DIR, 'settings.json'))) die('Profile missing. Run: dsv4f setup');
+
+  autoUpdateCheck();
   if (!await cmdStart({ quiet: true })) process.exit(1);
 
-  // First run: pull across memories, transcripts and permissions (scrubbed so they resume).
-  // --source <path> propagates into the importer (handled below as a dsv4f flag, then stripped
-  // before we hand the rest to claude).
+  // Pull across memories, transcripts and permissions (scrubbed so they resume). --source
+  // <path> propagates into the importer (handled below as a dsv4f flag, then stripped before
+  // we hand the rest to claude).
+  //
+  // This used to be gated behind a one-time .imported marker — ran exactly once, ever, so any
+  // Claude Code session created after the very first `dsv4f run` was never picked up again.
+  // dsv4f-import is incremental by default now (a per-file manifest skips anything unchanged),
+  // so it's cheap enough to run --auto on every launch instead; --quiet keeps a normal launch
+  // silent when nothing changed. A failed import no longer aborts the whole run — you can
+  // still use the tool with whatever was imported last time.
   const sourceArg = parseSource(rest);
-  if (!fs.existsSync(path.join(PROFILE_DIR, '.imported'))) {
-    const srcDefault = path.join(HOME, '.claude', 'projects');
-    if (fs.existsSync(srcDefault) || sourceArg.length > 0) {
-      console.error('dsv4f: first run — importing existing Claude Code state...');
-      const r = spawnSync(process.execPath,
-        [path.join(ROOT, 'bin', 'dsv4f-import'), ...sourceArg],
-        { stdio: 'inherit' });
-      if (r.status !== 0) process.exit(r.status ?? 1);
-    } else {
-      console.error(`dsv4f: no Claude Code state found at ${path.join(HOME, '.claude')} — skipping first-run import.`);
-      console.error('         pass --source <path> on `dsv4f run` to import from a different location.');
-    }
+  const srcDefault = path.join(HOME, '.claude', 'projects');
+  if (fs.existsSync(srcDefault) || sourceArg.length > 0) {
+    const r = spawnSync(process.execPath,
+      [path.join(ROOT, 'bin', 'dsv4f-import'), '--auto', '--quiet', ...sourceArg],
+      { stdio: 'inherit' });
+    if (r.status !== 0) console.error('dsv4f: import failed; continuing without it');
   }
 
   // Resolve the Claude Code binary. On Windows this honours PATHEXT (so a `claude.exe`
