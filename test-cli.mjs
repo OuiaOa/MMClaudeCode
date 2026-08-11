@@ -67,15 +67,22 @@ check('Windows + where.exe miss + ~/.local/bin/claude.exe exists: returns that p
 });
 
 check('Windows + where.exe miss + APPDATA\\npm\\claude.cmd exists: returns that path', () => {
+  // PRE-EXISTING BUG in this test, fixed 2026-08-13: path.join() uses the RUNTIME os's
+  // separator, not the simulated `platform` param — on a Linux/Mac dev machine that means
+  // POSIX '/' even while testing 'win32' behavior. A hardcoded all-backslash expected
+  // string could therefore never match the implementation's actual path.join() output
+  // except when this suite happened to run ON Windows. Build the expectation the same way
+  // the implementation does, so the test is meaningful on every dev platform.
   const appdata = 'C:\\Users\\Test\\AppData\\Roaming';
+  const expected = path.join(appdata, 'npm', 'claude.cmd');
   const r = resolveClaude({
     platform: 'win32',
     exec: () => missWhere,
-    fsSync: fsAllow([`${appdata}\\npm\\claude.cmd`]),
+    fsSync: fsAllow([expected]),
     env: envOf({ APPDATA: appdata }),
     home: '/tmp/empty',
   });
-  assert.equal(r, `${appdata}\\npm\\claude.cmd`);
+  assert.equal(r, expected);
 });
 
 check('Windows + nothing found: throws with an actionable message', () => {
@@ -125,6 +132,89 @@ check('Windows + DSV4F_DATA_DIR set but no bundled copy: falls through to PATH/l
     home,
   });
   assert.equal(r, 'claude');
+});
+
+// -------------------------------------------------------------------------------------
+// Two real, confirmed bugs fixed 2026-08-13 in the same change:
+//   1. The bundled-copy check used to live entirely inside `if (platform !== 'win32')
+//      return 'claude'` -- i.e. it only ran on Windows. `install.sh --bundle` on Linux/Mac
+//      copied a binary to a path resolveClaude() would NEVER look at, making --bundle
+//      silently inert everywhere except Windows.
+//   2. Even fixed for #1, the check only fired when the caller had explicitly set
+//      DSV4F_DATA_DIR in env -- which dsv4f.mjs's own cmdRun() never does (it computes
+//      DATA_DIR locally with a fallback default but doesn't export it back into
+//      process.env before calling resolveClaude()). So in EVERY real, non-test call site,
+//      the bundled check would never have fired even on Windows, despite test #7 above
+//      (which hand-supplies DSV4F_DATA_DIR) appearing to prove it worked.
+console.log('\n\x1b[1mresolveClaude() -- 2026-08-13 bundled-copy bug fixes\x1b[0m');
+
+check('non-Windows: a bundled copy IS now checked and preferred over bare "claude"', () => {
+  const home = '/home/fakeuser';
+  const bundled = path.join(home, '.local', 'share', 'claude-dsv4f', 'bin', 'claude');
+  const r = resolveClaude({
+    platform: 'linux',
+    exec: throwingExec, // must never even get this far -- bundled wins first
+    fsSync: fsAllow([bundled]),
+    env: envOf({}),
+    home,
+  });
+  assert.equal(r, bundled);
+});
+
+check('non-Windows: no bundled copy present still falls back to bare "claude" (unaffected)', () => {
+  const r = resolveClaude({
+    platform: 'linux',
+    exec: throwingExec,
+    fsSync: fsAllow([]),
+    env: envOf({}),
+    home: '/home/fakeuser',
+  });
+  assert.equal(r, 'claude');
+});
+
+check('macOS: bundled copy is also checked (not just win32/linux)', () => {
+  const home = '/Users/fakeuser';
+  const bundled = path.join(home, '.local', 'share', 'claude-dsv4f', 'bin', 'claude');
+  const r = resolveClaude({
+    platform: 'darwin',
+    exec: throwingExec,
+    fsSync: fsAllow([bundled]),
+    env: envOf({}),
+    home,
+  });
+  assert.equal(r, bundled);
+});
+
+check('Windows: bundled copy found WITHOUT explicitly setting DSV4F_DATA_DIR (the real-world case)', () => {
+  // This is the scenario that matters: dsv4f.mjs's cmdRun() never sets DSV4F_DATA_DIR in
+  // the environment resolveClaude() sees -- it only has a LOCAL variable with the same
+  // fallback logic. Passing env: {} here (no DSV4F_DATA_DIR key at all) is the honest
+  // simulation of that; the fix means resolveClaude() must derive the same default path
+  // itself rather than requiring the caller to have already done so.
+  const home = path.join(path.parse(os.tmpdir()).root, 'realisticfakehome');
+  const bundled = path.join(home, '.local', 'share', 'claude-dsv4f', 'bin', 'claude.exe');
+  const r = resolveClaude({
+    platform: 'win32',
+    exec: () => okWhere, // PATH also has a claude -- bundled must still win
+    fsSync: fsAllow([bundled]),
+    env: envOf({}), // deliberately no DSV4F_DATA_DIR
+    home,
+  });
+  assert.equal(r, bundled);
+});
+
+check('an explicit dataDir override takes precedence over the computed default', () => {
+  const explicitDir = '/opt/custom-dsv4f-location';
+  const bundled = path.join(explicitDir, 'bin', 'claude');
+  const r = resolveClaude({
+    platform: 'linux',
+    exec: throwingExec,
+    fsSync: fsAllow([bundled]),
+    env: envOf({}),
+    home: '/home/fakeuser',
+    dataDir: explicitDir,
+  });
+  assert.equal(r, bundled);
 });
 
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);

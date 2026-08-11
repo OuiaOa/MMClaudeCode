@@ -65,7 +65,21 @@ if (-not $claudeBin -and -not $NoAutoInstall) {
         Write-Host "Claude Code CLI not found -- attempting install via npm..." -ForegroundColor Yellow
         try {
             & npm install -g @anthropic-ai/claude-code 2>&1 | Out-Host
-            $claudeBin = Find-Claude
+            # CONFIRMED LIVE BUG (found on a real Windows machine, 2026-08-12): npm install
+            # can report success (the package really is on disk, e.g. claude.cmd exists at
+            # $env:APPDATA\npm\claude.cmd immediately checkable in a fresh shell) while THIS
+            # SAME process's very next Find-Claude call still returns nothing -- reproduced
+            # twice: install.ps1 threw "Claude Code CLI is required" right after npm printed
+            # "added N packages", but running install.ps1 again immediately succeeded with
+            # zero further action needed. Root cause not fully isolated (likely a brief
+            # antivirus scan lock or filesystem-event delay on the just-written .cmd file,
+            # not an actual npm failure) -- a short retry loop is a robust fix regardless of
+            # the exact cause, and costs nothing when Find-Claude succeeds on the first try
+            # as it normally does.
+            for ($i = 0; -not $claudeBin -and $i -lt 5; $i++) {
+                $claudeBin = Find-Claude
+                if (-not $claudeBin) { Start-Sleep -Milliseconds 500 }
+            }
             if ($claudeBin) {
                 Write-Host "Claude Code installed." -ForegroundColor Green
             }

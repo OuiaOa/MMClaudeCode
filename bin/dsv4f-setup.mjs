@@ -197,54 +197,101 @@ WantedBy=default.target
 
 spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'start'], { stdio: 'inherit' });
 
-// ------------------------------------------------------ existing-state scan
-// Look in ~/.claude (the standard Claude Code data directory) for projects, memories and
-// portable config (agents/skills/commands/output-styles). If any of those exist, offer to
-// import them now so the user does not have to discover `dsv4f-import` later. This is the
-// behaviour the README described and that users were expecting.
-const scanSrc = path.join(HOME, '.claude');
-const scanProjects = (() => {
-  try {
-    const p = path.join(scanSrc, 'projects');
-    return fs.readdirSync(p).filter(n => !n.includes('claude-dsv4f'));
-  } catch { return []; }
-})();
-const scanMemory = (() => {
-  let n = 0;
-  try {
-    for (const proj of scanProjects) {
-      try { n += fs.readdirSync(path.join(scanSrc, 'projects', proj, 'memory')).length; } catch {}
+// ------------------------------------------------------ multi-source import picker
+// Three possible sources, any combination present: Claude Code CLI, Claude Desktop, and
+// opencode. See bin/dsv4f-sources.mjs's header for exactly what each one is and why
+// claude-cli/claude-desktop are handled together (they share ~/.claude/projects — Desktop
+// embeds the real CLI rather than having its own transcript format).
+//
+// Per source, four dispositions, asked INDIVIDUALLY — never assumed, never global:
+//   leave   nothing happens
+//   copy    imported into dsv4f; source keeps its own copy untouched
+//   move    imported into dsv4f, then scrubbed from the source (source stays installed,
+//           minus that history)
+//   remove  copy + scrub, then remove the source itself. For claude-cli this means bundling
+//           the binary privately into dsv4f and deleting Anthropic credentials — never
+//           literally uninstalling it, since dsv4f cannot run without SOME Claude Code
+//           binary. For claude-desktop/opencode it means printing manual uninstall steps —
+//           dsv4f never runs a third-party uninstaller unattended. See dsv4f-scrub.mjs's
+//           header for the full reasoning.
+{
+  const { detectSources } = await import('./dsv4f-sources.mjs');
+  const sources = detectSources({ home: HOME, env: process.env, platform: process.platform });
+  const present = sources.filter(s => s.present);
+
+  if (present.length) {
+    console.log(bold('\nExisting sessions found'));
+    const TTY = process.stdin.isTTY && process.stdout.isTTY;
+    const disposition = {}; // sourceId -> 'leave' | 'copy' | 'move' | 'remove'
+
+    if (TTY) {
+      const rl = (await import('node:readline')).default.createInterface({ input: process.stdin, output: process.stdout });
+      const ask = (q) => new Promise(res => rl.question(q, a => res(a.trim().toLowerCase())));
+      for (const s of present) {
+        const detail = s.id === 'opencode'
+          ? (s.stats.error ? s.stats.error : `${s.stats.sessions} session(s)`)
+          : s.id === 'claude-desktop'
+            ? `${s.stats.sidecars} session(s) in its own list (shares history with Claude Code CLI)`
+            : `${s.stats.sessions} transcript(s), ${s.stats.memories} memory file(s)`;
+        console.log(`\n  ${bold(s.label)} — ${detail}`);
+        const ans = await ask('  [l]eave alone / [c]opy / [m]ove (copy + clear from source) / [r]emove entirely (Enter = leave): ');
+        disposition[s.id] = { l: 'leave', c: 'copy', m: 'move', r: 'remove' }[ans[0]] || 'leave';
+      }
+
+      // The shared-transcript case is exactly the kind of thing worth spelling out rather
+      // than silently doing the "technically correct" thing — a user picking "leave" for
+      // the CLI while picking "move" for Desktop needs to know their raw history isn't
+      // actually going anywhere, only Desktop's own list of it.
+      if (disposition['claude-desktop'] && ['move', 'remove'].includes(disposition['claude-desktop']) &&
+          (!disposition['claude-cli'] || disposition['claude-cli'] === 'leave' || disposition['claude-cli'] === 'copy')) {
+        console.log(yel('  Note: Claude Code CLI and Claude Desktop share the same underlying transcripts.'));
+        console.log(yel('  Only removing them from Desktop\'s own session list — the transcripts themselves stay,'));
+        console.log(yel('  since Claude Code CLI is set to keep them.'));
+      }
+
+      // Axis 3: "keep Claude Code CLI installed, but stop paying Anthropic through it."
+      // Only offered when the CLI is actually being kept usable (leave/copy — 'remove'
+      // already achieves this by bundling+dropping credentials instead, and 'move' still
+      // leaves the CLI installed and pointed at Anthropic, which is a legitimate choice of
+      // its own that shouldn't be second-guessed here). Proven technique — see
+      // dsv4f-reroute.mjs's header — but ALWAYS asked, never applied silently, since it
+      // edits the user's real, shared settings.json in place.
+      const cliSource = present.find(s => s.id === 'claude-cli');
+      if (cliSource?.binary && ['leave', 'copy'].includes(disposition['claude-cli'] || 'leave')) {
+        console.log(`\n  ${bold('One more option')}`);
+        console.log('  Your Claude Code CLI is staying installed. It can ALSO be pointed at DeepSeek');
+        console.log('  through this same shim — so you keep using the real `claude` command, but it');
+        console.log('  never bills Anthropic again. This edits its real settings.json in place (backed');
+        console.log('  up first); you can revert it any time by restoring that backup.');
+        const rerouteAns = await ask('  Route it through dsv4f too? [y/N] ');
+        if (rerouteAns[0] === 'y') {
+          const { buildRerouteEnv, applyCliReroute } = await import('./dsv4f-reroute.mjs');
+          const { newBackupDir } = await import('./dsv4f-scrub.mjs');
+          const cliSettingsPath = path.join(cliSource.paths.profile, 'settings.json');
+          const backupDir = newBackupDir(PROFILE_DIR, 'cli-reroute');
+          try {
+            const r = applyCliReroute(cliSettingsPath, buildRerouteEnv({ port, sentinel: SENTINEL }), backupDir);
+            console.log(bold(`  Rerouted ${cliSettingsPath}`));
+            if (r.backupPath) console.log(`  (original backed up to ${r.backupPath})`);
+            console.log(yel('  Note: any OTHER standalone Claude Code CLI install that reads this same'));
+            console.log(yel('  settings.json will also be rerouted — they share one config file.'));
+          } catch (e) {
+            console.error(yel(`  Reroute failed: ${e.message}`));
+          }
+        }
+      }
+      rl.close();
+    } else {
+      // Non-interactive: preserve the old default (auto-import, never destructive) and
+      // extend it consistently to the two new sources. copy is always safe; move/remove
+      // are NEVER chosen without an interactive human present to confirm them.
+      for (const s of present) disposition[s.id] = 'copy';
+      console.log(yel('  Non-interactive — copying everything found, nothing removed from any source.'));
+      console.log(yel('  Re-run `dsv4f setup` interactively to choose move/remove instead.'));
     }
-  } catch {}
-  return n;
-})();
-const scanPortable = ['agents', 'skills', 'commands', 'output-styles', 'CLAUDE.md'].filter(d =>
-  fs.existsSync(path.join(scanSrc, d))
-);
 
-if (scanProjects.length || scanMemory > 0 || scanPortable.length) {
-  const items = [];
-  if (scanProjects.length) items.push(`${scanProjects.length} project${scanProjects.length === 1 ? '' : 's'}`);
-  if (scanMemory > 0) items.push(`${scanMemory} memory file${scanMemory === 1 ? '' : 's'}`);
-  if (scanPortable.length) items.push(`${scanPortable.length} portable config item${scanPortable.length === 1 ? '' : 's'}`);
-  console.log(bold(`\nExisting Claude Code state detected: ${items.join(', ')} at ${scanSrc}`));
-
-  // In TTY mode, ask. In non-interactive (CI, scripted), skip with a notice -- the user can
-  // run `dsv4f-import` explicitly if they want it.
-  const TTY = process.stdin.isTTY && process.stdout.isTTY;
-  let doImport = !TTY;
-  if (TTY) {
-    const rl = (await import('node:readline')).default.createInterface({ input: process.stdin, output: process.stdout });
-    const ans = await new Promise(res => rl.question('Import now? [Y/n] ', a => { rl.close(); res(a.trim().toLowerCase()); }));
-    doImport = (ans === '' || ans === 'y' || ans === 'yes');
-  }
-  if (doImport) {
-    const args = [];
-    if (!TTY) args.push('--all');          // non-interactive: import everything, no picker
-    const r = spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f-import'), ...args], { stdio: 'inherit' });
-    if (r.status !== 0) console.error(yel(`Import returned ${r.status}; you can retry with: dsv4f-import --force`));
-  } else {
-    console.log(yel('Skipped. Run later: dsv4f-import'));
+    const { applySourceDispositions } = await import('./dsv4f-setup-sources.mjs');
+    await applySourceDispositions({ sources: present, disposition, node, ROOT, PROFILE_DIR, DATA_DIR });
   }
 }
 
