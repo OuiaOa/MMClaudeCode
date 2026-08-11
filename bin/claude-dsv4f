@@ -40,14 +40,21 @@ if ! curl -sf -m 2 "http://127.0.0.1:$PORT/_dsv4f/health" >/dev/null 2>&1; then
   exit 1
 fi
 
-# First run: bring across memories, transcripts and permissions from ~/.claude. Transcripts are
-# scrubbed of thinking signatures and image blocks on the way in, without which they cannot be
-# resumed against DeepSeek. Idempotent — the marker file stops it repeating.
-if [[ ! -f "$PROFILE_DIR/.imported" && -d "$HOME/.claude/projects" ]]; then
-  echo "claude-dsv4f: first run — importing your existing Claude Code state..." >&2
-  if command -v dsv4f-import >/dev/null; then
-    dsv4f-import >&2 || echo "claude-dsv4f: import failed; continuing without it" >&2
-  fi
+# Bring across memories, transcripts and permissions from ~/.claude. Transcripts are scrubbed
+# of thinking signatures and image blocks on the way in, without which they cannot be resumed
+# against DeepSeek.
+#
+# This used to be gated behind a one-time marker file (.imported) — it ran exactly once, ever,
+# on the very first launch. Any Claude Code session created afterward, in the real ~/.claude
+# environment, was never picked up: the fix landed in the standard Claude Code CLI kept
+# growing, dsv4f's copy of it silently stopped. Every launch now re-runs dsv4f-import in
+# --auto mode instead: it keeps a small per-file manifest of what it already processed
+# (mtime+size), so an unchanged history is a fast no-op stat pass, and only new or
+# appended-to sessions actually get re-scrubbed and copied. --quiet suppresses the banner
+# entirely when there is nothing new, so a normal launch with no new upstream activity prints
+# nothing extra.
+if [[ -d "$HOME/.claude/projects" ]] && command -v dsv4f-import >/dev/null; then
+  dsv4f-import --auto --quiet >&2 || echo "claude-dsv4f: import failed; continuing without it" >&2
 fi
 
 export CLAUDE_CONFIG_DIR="$PROFILE_DIR"

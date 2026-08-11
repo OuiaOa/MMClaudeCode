@@ -259,5 +259,52 @@ console.log('\n\x1b[1maggressive scrub: system-reminder, ide_selection, AI self-
   }
 }
 
+// --- test 7: incremental sync — the actual point of --auto being safe to run on every
+// launch. A one-time .imported marker used to gate the whole import to a single run ever;
+// any Claude Code session created afterward was never picked up again. The replacement is a
+// per-file mtime+size manifest: a repeat run with nothing changed should copy nothing, a
+// file that changes should be the ONLY thing reprocessed, and --force should still force a
+// full redo regardless of the manifest.
+console.log('\n\x1b[1mincremental sync (--auto / repeat runs)\x1b[0m');
+{
+  const { src } = buildFixture();
+  const dst = path.join(SCRATCH, 'dst-incremental');
+
+  const r1 = runImport(['--source', src, '--all'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  check('first run (no --force, no prior state) exits 0', r1.status === 0, r1.stderr);
+  check('first run copies everything', /files copied\s*:\s*(?!0\b)\d+/.test(r1.stdout), r1.stdout.slice(0, 300));
+  check('.import-state.json written', fs.existsSync(path.join(dst, '.import-state.json')));
+
+  const sessionA = path.join(dst, 'projects', 'C--Users-test', 'session-A.jsonl');
+  const mtimeAfterFirst = fs.statSync(sessionA).mtimeMs;
+
+  // Re-run immediately with nothing changed on the source side.
+  const r2 = runImport(['--source', src, '--all'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  check('second run (nothing changed) exits 0', r2.status === 0, r2.stderr);
+  check('second run copies nothing', /files copied\s*:\s*0\b/.test(r2.stdout), r2.stdout.slice(0, 300));
+  check('second run reports unchanged files', /unchanged\s*:\s*(?!0\b)\d+/.test(r2.stdout), r2.stdout.slice(0, 300));
+  check('destination file was NOT rewritten (mtime unchanged)',
+    fs.statSync(sessionA).mtimeMs === mtimeAfterFirst);
+
+  // --auto --quiet: the launcher's actual invocation shape. Nothing changed -> nothing printed.
+  const r3 = runImport(['--source', src, '--auto', '--quiet'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  check('--auto --quiet with no changes prints nothing', r3.status === 0 && r3.stdout.trim() === '', JSON.stringify(r3.stdout));
+
+  // Append to the source session — this is what a live, growing Claude Code session looks
+  // like between two launches. Only this ONE file should be reprocessed.
+  fs.appendFileSync(path.join(src, 'projects', 'C--Users-test', 'session-A.jsonl'),
+    '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"a new turn since last sync"}]},"sessionId":"sA"}\n');
+  const r4 = runImport(['--source', src, '--auto', '--quiet'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  check('--auto --quiet DOES print when something changed', /synced/.test(r4.stdout), JSON.stringify(r4.stdout));
+  const updated = fs.readFileSync(sessionA, 'utf8');
+  check('the appended turn made it into the re-synced destination file',
+    /a new turn since last sync/.test(updated));
+
+  // --force ignores the manifest and redoes everything, even though nothing "changed" per
+  // the manifest's own bookkeeping since the last (quiet, no-op) run.
+  const r5 = runImport(['--source', src, '--force'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  check('--force still reprocesses everything', /files copied\s*:\s*(?!0\b)\d+/.test(r5.stdout), r5.stdout.slice(0, 300));
+}
+
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
 process.exit(fail > 0 ? 1 : 0);

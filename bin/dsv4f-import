@@ -26,10 +26,21 @@
  *
  * Never copies .credentials.json — that is an Anthropic OAuth session and is meaningless here.
  *
- * Usage: dsv4f-import [--dry-run] [--force] [--source <path>]
+ * Usage: dsv4f-import [--dry-run] [--force] [--auto] [--quiet] [--source <path>]
  *
  *   --source <path>   import from a directory other than ~/.claude
  *                      (if ~/.claude is missing AND stdin is a TTY, you'll be prompted)
+ *   --auto            no interactive picker (implies "all"); used by the claude-dsv4f
+ *                      launcher on every run, not just the first
+ *   --quiet           print nothing unless something actually changed (one compact line);
+ *                      with neither --auto nor --quiet, prints the full itemised report
+ *
+ * INCREMENTAL BY DEFAULT: a per-file manifest (.import-state.json, mtime+size) means a repeat
+ * run only re-scrubs/copies files that are new or have changed since the last run — the whole
+ * point being that this is cheap enough to run on every single `claude-dsv4f` launch, not just
+ * once. (Earlier versions gated the whole import behind a one-time .imported marker file, so
+ * any Claude Code session created after the very first launch was never picked up again —
+ * --force still exists to wipe the manifest and reprocess everything from scratch.)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -37,11 +48,14 @@ import os from 'node:os';
 
 const HOME = os.homedir();
 const DST = process.env.CLAUDE_DSV4F_PROFILE || path.join(HOME, '.claude-dsv4f');
-const MARKER = path.join(DST, '.imported');
+const MARKER = path.join(DST, '.imported');            // now just "last synced at", not a gate
+const STATE_FILE = path.join(DST, '.import-state.json'); // per-file mtime+size manifest
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
 const FORCE = args.includes('--force');
+const AUTO = args.includes('--auto');
+const QUIET = args.includes('--quiet');
 
 // --source <path>  (or  --source=<path>)
 function argSource() {
@@ -78,15 +92,35 @@ if (!fs.existsSync(SRC)) {
   );
 }
 
-if (fs.existsSync(MARKER) && !FORCE && !DRY) {
-  console.log(`Already imported (${fs.readFileSync(MARKER, 'utf8').trim()}). Use --force to redo.`);
-  process.exit(0);
+// FORCE means "reprocess everything from scratch" — start from an empty manifest so every
+// file looks new. Otherwise load what was recorded last run; a missing/corrupt file just
+// means "nothing recorded yet," not an error.
+let importState = {};
+if (!FORCE) {
+  try { importState = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { importState = {}; }
 }
+const newState = { ...importState };
 
-let copied = 0, sanitised = 0, skipped = 0, thinkingDropped = 0, imagesDropped = 0;
+let copied = 0, sanitised = 0, skipped = 0, skippedUnchanged = 0, thinkingDropped = 0, imagesDropped = 0;
 const plan = [];
 
 function note(what, detail) { plan.push(`  ${what.padEnd(34)} ${detail}`); }
+
+/**
+ * True when srcFile is new or has changed (mtime or size) since the last recorded run.
+ * Always records the current fingerprint into newState regardless of the answer, so a run
+ * that touches a file — whether or not it decides to reprocess it — leaves an up-to-date
+ * record for next time. Keyed by SRC + relative path so switching --source can never collide
+ * with a manifest entry recorded against a different source tree.
+ */
+function needsProcessing(srcFile, relKey) {
+  let st;
+  try { st = fs.statSync(srcFile); } catch { return true; }
+  const key = `${SRC}::${relKey}`;
+  const prev = importState[key];
+  newState[key] = { mtimeMs: st.mtimeMs, size: st.size };
+  return !prev || prev.mtimeMs !== st.mtimeMs || prev.size !== st.size;
+}
 
 // ------------------------------------------------------------------ sanitising
 
@@ -222,15 +256,17 @@ function scrubMemoryFile(srcFile, dstFile) {
 //   - .jsonl files are scrubbed (thinking blocks / images / signatures stripped)
 //   - everything else is copied verbatim (PDFs, .meta.json, etc. — these are referenced
 //     from .jsonl entries and must be byte-identical for Claude Code to load them)
-// Returns { files, jsonls } ACROSS THE WHOLE TREE (recursive), so the caller can log a
-// single per-section count without re-walking the source. Sub-walks aggregate their
-// counts into the parent's return value.
+// Returns { files, jsonls, changedFiles, changedJsonls } ACROSS THE WHOLE TREE (recursive).
+// files/jsonls count everything SEEN (present at the source, whether reprocessed or skipped
+// as unchanged); changedFiles/changedJsonls count only what was ACTUALLY (re)written this
+// run — that split is what lets a repeat run report "nothing new" truthfully instead of
+// re-claiming credit for files a previous run already brought over.
 
 function walkTree(from, to, rel = '') {
   let entries;
   try { entries = fs.readdirSync(from, { withFileTypes: true }); }
-  catch { return { files: 0, jsonls: 0 }; }   // unreadable dir — skip silently
-  let files = 0, jsonls = 0;
+  catch { return { files: 0, jsonls: 0, changedFiles: 0, changedJsonls: 0 }; }   // unreadable dir — skip silently
+  let files = 0, jsonls = 0, changedFiles = 0, changedJsonls = 0;
   const inMemory = rel.split(path.sep).includes('memory') || from.endsWith(`${path.sep}memory`);
   for (const e of entries) {
     const s = path.join(from, e.name);
@@ -239,34 +275,46 @@ function walkTree(from, to, rel = '') {
     if (e.isDirectory()) {
       if (!DRY) fs.mkdirSync(d, { recursive: true });
       const sub = walkTree(s, d, childRel);
-      files  += sub.files;
-      jsonls += sub.jsonls;
+      files += sub.files; jsonls += sub.jsonls;
+      changedFiles += sub.changedFiles; changedJsonls += sub.changedJsonls;
       continue;
     }
+    const changed = needsProcessing(s, childRel);
+    if (!changed) skippedUnchanged++;
+
     if (e.name.endsWith('.jsonl')) {
-      if (scrubTranscript(s, d) === 0) note(`transcript ${e.name.slice(0, 8)}`, 'empty after scrub');
-      jsonls++; sanitised++;
+      jsonls++;
+      if (changed) {
+        if (scrubTranscript(s, d) === 0) note(`transcript ${e.name.slice(0, 8)}`, 'empty after scrub');
+        changedJsonls++; sanitised++;
+      }
     } else {
-      // .md files inside a memory/ subtree are scanned for Anthropic-specific tags
-      // (system-reminder, "I am Claude", etc.). The text is otherwise preserved verbatim
-      // — we never rewrite user-written markdown otherwise. Other files (PDFs, .meta.json)
-      // are copied byte-identical: Claude Code's tool_result blocks reference them by hash.
-      if (e.name.endsWith('.md') && inMemory) {
-        if (scrubMemoryFile(s, d)) files++;
-        else if (!DRY) { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d); files++; }
-        else files++;
-      } else {
-        if (!DRY) { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d); }
-        files++;
+      files++;
+      if (changed) {
+        // .md files inside a memory/ subtree are scanned for Anthropic-specific tags
+        // (system-reminder, "I am Claude", etc.). The text is otherwise preserved verbatim
+        // — we never rewrite user-written markdown otherwise. Other files (PDFs, .meta.json)
+        // are copied byte-identical: Claude Code's tool_result blocks reference them by hash.
+        if (e.name.endsWith('.md') && inMemory) {
+          if (!scrubMemoryFile(s, d) && !DRY) { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d); }
+        } else if (!DRY) {
+          fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d);
+        }
+        changedFiles++;
       }
     }
   }
-  copied += files + jsonls;
-  return { files, jsonls };
+  copied += changedFiles + changedJsonls;
+  return { files, jsonls, changedFiles, changedJsonls };
 }
 
-console.log(bold(`\nclaude-dsv4f import${DRY ? ' (dry run — nothing written)' : ''}\n`));
-console.log(`  from ${SRC}\n  to   ${DST}\n`);
+// AUTO mode (the launcher's every-launch sync) stays silent up front — whether anything is
+// worth printing at all is only known once the whole walk is done, and most runs find
+// nothing new. See the final QUIET/AUTO-aware summary block at the bottom.
+if (!AUTO) {
+  console.log(bold(`\nclaude-dsv4f import${DRY ? ' (dry run — nothing written)' : ''}\n`));
+  console.log(`  from ${SRC}\n  to   ${DST}\n`);
+}
 
 // 1. per-project trees: <SRC>/projects/<proj>/  →  <DST>/projects/<proj>/
 //
@@ -288,10 +336,11 @@ if (fs.existsSync(projSrc)) {
     selectedProjects = new Set(allProjects);
   } else if (args.includes('--none')) {
     selectedProjects = new Set();
-  } else if (!DRY && !FORCE && process.stdin.isTTY && process.stdout.isTTY) {
-    // First-run picker: only when the user didn't force --all/--none and there's no marker.
-    // We deliberately skip the picker on --force (re-import) so users re-running don't
-    // have to confirm every time.
+  } else if (!DRY && !FORCE && !AUTO && process.stdin.isTTY && process.stdout.isTTY) {
+    // First-run picker: only when the user didn't force --all/--none/--auto and there's no
+    // marker. We deliberately skip the picker on --force (re-import) so users re-running
+    // don't have to confirm every time, and --auto never shows it at all (it's meant to run
+    // unattended on every launch).
     selectedProjects = await pickProjects(allProjects);
   }
 
@@ -307,8 +356,8 @@ if (fs.existsSync(projSrc)) {
   for (const proj of toWalk) {
     const from = path.join(projSrc, proj), to = path.join(DST, 'projects', proj);
     if (!DRY) fs.mkdirSync(to, { recursive: true });
-    const { jsonls } = walkTree(from, to);
-    if (jsonls) note(`sessions: ${proj.slice(0, 24)}`, `${jsonls} transcript${jsonls === 1 ? '' : 's'}`);
+    const { changedJsonls } = walkTree(from, to);
+    if (changedJsonls) note(`sessions: ${proj.slice(0, 24)}`, `${changedJsonls} transcript${changedJsonls === 1 ? '' : 's'}`);
   }
   skipped += allProjects.length - toWalk.length;
 }
@@ -373,13 +422,17 @@ for (const d of ['agents', 'skills', 'commands', 'output-styles']) {
   if (!fs.existsSync(from)) continue;
   const to = path.join(DST, d);
   if (!DRY) fs.mkdirSync(to, { recursive: true });
-  const { files } = walkTree(from, to);
-  if (files) note(d, `${files} file${files === 1 ? '' : 's'}`);
+  const { changedFiles } = walkTree(from, to);
+  if (changedFiles) note(d, `${changedFiles} file${changedFiles === 1 ? '' : 's'}`);
 }
 const userMd = path.join(SRC, 'CLAUDE.md');
 if (fs.existsSync(userMd)) {
-  if (!DRY) fs.copyFileSync(userMd, path.join(DST, 'CLAUDE.md'));
-  note('CLAUDE.md', 'user-level instructions'); copied++;
+  if (needsProcessing(userMd, 'CLAUDE.md')) {
+    if (!DRY) fs.copyFileSync(userMd, path.join(DST, 'CLAUDE.md'));
+    note('CLAUDE.md', 'user-level instructions'); copied++;
+  } else {
+    skippedUnchanged++;
+  }
 }
 
 // 3. permissions — merged, never overwriting the env block that IS the integration
@@ -392,24 +445,43 @@ if (srcSettings?.permissions?.allow && dstSettings) {
   if (add.length) {
     dstSettings.permissions = dstSettings.permissions || {};
     dstSettings.permissions.allow = [...(dstSettings.permissions.allow || []), ...add];
+    copied += add.length;
     if (!DRY) { fs.writeFileSync(dstPath, JSON.stringify(dstSettings, null, 2) + '\n'); fs.chmodSync(dstPath, 0o600); }
     note('permissions', `${add.length} rule${add.length === 1 ? '' : 's'} merged`);
   } else note('permissions', 'already up to date');
 }
 
-console.log(plan.join('\n') || '  (nothing to import)');
-console.log(bold('\nSummary'));
-console.log(`  files copied        : ${copied}`);
-console.log(`  transcripts scrubbed: ${sanitised}`);
-console.log(`  thinking blocks     : ${thinkingDropped} dropped ${dim('(signatures DeepSeek cannot validate)')}`);
-console.log(`  images/documents    : ${imagesDropped} replaced ${dim('(unsupported upstream)')}`);
-if (skipped) console.log(`  skipped             : ${skipped} dsv4f project dir(s)`);
-console.log(dim('\n  .credentials.json was NOT copied — it is an Anthropic session, meaningless here.'));
+const hadChanges = copied > 0;
+
+if (QUIET) {
+  // The whole point of --quiet (used by the launcher on every single run): say nothing when
+  // there's nothing new, so a normal launch with no upstream activity since the last one
+  // doesn't print anything at all. When something DID change, one compact line beats silence
+  // — the user should be able to tell dsv4f is actually keeping up, not just trust it blindly.
+  if (hadChanges) {
+    const bits = [];
+    if (sanitised) bits.push(`${sanitised} session${sanitised === 1 ? '' : 's'}`);
+    const otherFiles = copied - sanitised;
+    if (otherFiles > 0) bits.push(`${otherFiles} other item${otherFiles === 1 ? '' : 's'}`);
+    console.log(`claude-dsv4f: synced ${bits.join(', ') || `${copied} item(s)`} from ${SRC}`);
+  }
+} else {
+  console.log(plan.join('\n') || '  (nothing to import)');
+  console.log(bold('\nSummary'));
+  console.log(`  files copied        : ${copied}`);
+  console.log(`  transcripts scrubbed: ${sanitised}`);
+  console.log(`  thinking blocks     : ${thinkingDropped} dropped ${dim('(signatures DeepSeek cannot validate)')}`);
+  console.log(`  images/documents    : ${imagesDropped} replaced ${dim('(unsupported upstream)')}`);
+  if (skippedUnchanged) console.log(`  unchanged           : ${skippedUnchanged} file(s) already synced (no changes since last run)`);
+  if (skipped) console.log(`  skipped             : ${skipped} dsv4f project dir(s)`);
+  console.log(dim('\n  .credentials.json was NOT copied — it is an Anthropic session, meaningless here.'));
+}
 
 if (!DRY) {
   fs.mkdirSync(DST, { recursive: true });
   fs.writeFileSync(MARKER, new Date().toISOString() + '\n');
-  console.log(`\n${bold('Done.')} cd into any project and run: dsv4f run --resume\n`);
+  fs.writeFileSync(STATE_FILE, JSON.stringify(newState));
+  if (!AUTO) console.log(`\n${bold('Done.')} cd into any project and run: dsv4f run --resume\n`);
 } else {
   console.log(`\n${bold('Dry run.')} Re-run without --dry-run to apply.\n`);
 }
