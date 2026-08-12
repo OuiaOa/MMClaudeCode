@@ -6,7 +6,7 @@ OUT="${1:-$HOME/claude-dsv4f-$(date -u +%Y%m%d).tar.gz}"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PKG="$TMP/claude-dsv4f"
 mkdir -p "$PKG"
-cp -r "$SRC"/shim.mjs "$SRC"/probe.mjs "$SRC"/statusline.sh "$SRC"/test-shim.mjs \
+cp -r "$SRC"/shim.mjs "$SRC"/probe.mjs "$SRC"/test-shim.mjs \
       "$SRC"/config.default.json "$SRC"/bin "$SRC"/install.sh "$SRC"/install.ps1 "$SRC"/README.md "$PKG"/ 2>/dev/null || true
 cp -r "$SRC"/e2e "$PKG"/ 2>/dev/null || true
 # never ship secrets or machine state

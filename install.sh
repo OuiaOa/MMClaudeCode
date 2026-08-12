@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # claude-dsv4f installer — Linux / macOS / WSL
 #
-# Detects Node, npm, and Claude Code. If Claude Code is missing, attempts to install it
-# via `npm install -g @anthropic-ai/claude-code` (only when npm is on PATH and the user
-# didn't pass --no-auto-install). If Node/npm are missing entirely, fails with an
-# actionable, OS-specific error rather than trying to bootstrap a toolchain.
+# Detects Node, npm, and Claude Code. If Node itself is missing, attempts to install it via
+# the OS's own package manager (NodeSource+apt/dnf, pacman, or Homebrew) before falling back
+# to a manual-install message. If Claude Code is missing, attempts to install it via
+# `npm install -g @anthropic-ai/claude-code`. Either auto-install step is skipped entirely
+# if the user passed --no-auto-install.
 #
 # Flags:
-#   --no-auto-install    do NOT auto-install Claude Code even if missing
+#   --no-auto-install    do NOT auto-install Node.js or Claude Code even if missing
 #   --bundle             copy Claude Code's binary into the dsv4f install, so the
 #                        resulting setup is self-contained and the resolver prefers
 #                        the bundled copy. Has no effect if Claude Code isn't on PATH.
@@ -32,7 +33,29 @@ for a in "$@"; do
   esac
 done
 
-# -------------------------------------------------------------- Node check (hard)
+# -------------------------------------------------------------- Node (auto-install, then hard check)
+# Distro package repos often ship a Node too old for the v20 floor below, so this goes
+# straight to NodeSource/upstream sources rather than the generic `apt install nodejs` a
+# user might already have tried and found insufficient.
+if ! command -v node >/dev/null && [[ "$AUTO_INSTALL" -eq 1 ]]; then
+  echo "Node.js not found — attempting install..."
+  if command -v apt-get >/dev/null; then
+    echo "  using NodeSource + apt (will prompt for sudo)..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs
+  elif command -v dnf >/dev/null; then
+    echo "  using NodeSource + dnf (will prompt for sudo)..."
+    curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo -E bash - && sudo dnf install -y nodejs
+  elif command -v pacman >/dev/null; then
+    echo "  using pacman (will prompt for sudo)..."
+    sudo pacman -Sy --noconfirm nodejs npm
+  elif command -v brew >/dev/null; then
+    echo "  using Homebrew..."
+    brew install node
+  else
+    echo "  no known package manager found (apt/dnf/pacman/brew) — install manually."
+  fi
+  hash -r 2>/dev/null || true
+fi
 command -v node >/dev/null || { echo "Node.js v20+ is required. Install from:"; echo "  https://nodejs.org/  (or use your package manager)"; exit 1; }
 node_major="$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')"
 if (( node_major < 20 )); then
@@ -68,7 +91,7 @@ fi
 # ------------------------------------------------------------- copy files
 mkdir -p "$DEST" "$BIN"
 if [[ "$SRC" != "$DEST" || "$UPDATE" -eq 1 ]]; then
-  cp -r "$SRC"/shim.mjs "$SRC"/probe.mjs "$SRC"/statusline.sh "$SRC"/test-shim.mjs \
+  cp -r "$SRC"/shim.mjs "$SRC"/probe.mjs "$SRC"/test-shim.mjs \
         "$SRC"/config.default.json "$SRC"/bin "$DEST"/
   [[ -d "$SRC/e2e" ]] && cp -r "$SRC/e2e" "$DEST"/ || true
   # Skills (Claude Code Skills) ship with the dsv4f profile and live next to it. Each
@@ -77,7 +100,7 @@ if [[ "$SRC" != "$DEST" || "$UPDATE" -eq 1 ]]; then
   # alongside the binary.
   [[ -d "$SRC/skills" ]] && cp -r "$SRC/skills" "$DEST/" || true
 fi
-chmod +x "$DEST"/bin/* "$DEST"/statusline.sh 2>/dev/null || true
+chmod +x "$DEST"/bin/* 2>/dev/null || true
 
 # --------------------------------------------- optional: bundle Claude Code
 # Copies the claude binary into the dsv4f install so the resolver can prefer it.

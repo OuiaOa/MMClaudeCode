@@ -66,7 +66,10 @@ spawnSync(node, [path.join(ROOT, 'probe.mjs')], { stdio: 'inherit' });
 
 // profile
 const port = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).port || 8788;
-const statusline = WIN ? undefined : { type: 'command', command: path.join(ROOT, 'statusline.sh'), refreshInterval: 10 };
+// Cross-platform on every OS — see dsv4f-statusline.mjs's header for why this replaced the
+// old bash+curl statusline.sh (that script never ran on Windows, which has no guaranteed
+// POSIX shell, so every Windows install silently missed the cost display entirely).
+const statusline = { type: 'command', command: `node "${path.join(ROOT, 'bin', 'dsv4f-statusline.mjs')}"`, refreshInterval: 10 };
 
 // deny-list.sh ships with the package (a PreToolUse guardrail — bypassPermissions mode has
 // no other check on destructive commands) but never overwrite a hand-tuned copy, matching
@@ -139,6 +142,14 @@ if (!fs.existsSync(sPath)) {
   catch (e) { console.error(yel(`settings.json merge skipped (unparseable JSON): ${e.message}`)); live = null; }
   if (live) {
     const added = [];
+    // Migrate an existing statusLine still pointing at the removed statusline.sh (Windows
+    // installs never had one at all — the generic merge below only ADDS missing keys, so a
+    // pre-existing statusLine object on Linux/Mac would otherwise never pick up the new
+    // cross-platform command since `command` already exists under it).
+    if (live.statusLine?.command && /statusline\.sh/.test(live.statusLine.command)) {
+      live.statusLine = statusline;
+      added.push('statusLine (migrated off statusline.sh)');
+    }
     (function merge(dst, src, keyPath = '') {
       for (const [k, v] of Object.entries(src)) {
         const here = keyPath ? `${keyPath}.${k}` : k;

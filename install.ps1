@@ -3,13 +3,14 @@
 # There is no systemd here, so the shim is started on demand by `dsv4f run` instead of by a
 # service. That costs ~1s on first launch and removes a whole class of thing that can break.
 #
-# Detects Node, npm, and Claude Code. If Claude Code is missing, attempts to install it via
-# `npm install -g @anthropic-ai/claude-code` (only when npm is on PATH and -NoAutoInstall
-# wasn't passed). If Node/npm are missing entirely, fails with an actionable error rather
-# than trying to bootstrap a toolchain.
+# Detects Node and Claude Code. If Node itself is missing, attempts to install it via winget
+# (present on Windows 10 1709+ / 11 by default) before falling back to a manual-install
+# error. If Claude Code is missing, attempts to install it via
+# `npm install -g @anthropic-ai/claude-code`. Either auto-install step is skipped entirely
+# if -NoAutoInstall was passed.
 #
 # Flags:
-#   -NoAutoInstall    do NOT auto-install Claude Code even if missing
+#   -NoAutoInstall    do NOT auto-install Node.js or Claude Code even if missing
 #   -Bundle           copy Claude Code's binary into the dsv4f install, so the resulting
 #                     setup is self-contained and the resolver prefers the bundled copy
 #   -Update           re-copy files even if the destination already exists
@@ -32,9 +33,27 @@ $src  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dest = if ($env:DSV4F_HOME) { $env:DSV4F_HOME } else { Join-Path $HOME ".local\share\claude-dsv4f" }
 $bin  = Join-Path $HOME ".local\bin"
 
-# ------------------------------------------------- Node (hard requirement)
+# ------------------------------------------------- Node (auto-install, then hard check)
+if (-not (Get-Command node -ErrorAction SilentlyContinue) -and -not $NoAutoInstall) {
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        Write-Host "Node.js not found -- attempting install via winget..." -ForegroundColor Yellow
+        try {
+            & winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements | Out-Host
+        } catch {
+            Write-Host "  winget install failed." -ForegroundColor Red
+        }
+        # winget updates the registry's PATH but not this already-running process -- reload
+        # it from Machine+User so `node` is findable without needing a brand new shell.
+        $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        $userPathNow = [Environment]::GetEnvironmentVariable("Path", "User")
+        $env:Path = "$machinePath;$userPathNow"
+    } else {
+        Write-Host "  winget not found either -- install Node.js manually from https://nodejs.org/" -ForegroundColor Yellow
+    }
+}
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    throw "Node.js v20+ is required. Install from https://nodejs.org/"
+    throw "Node.js v20+ is required. Install from https://nodejs.org/ (or: winget install -e --id OpenJS.NodeJS.LTS), then re-run this installer in a NEW terminal."
 }
 $nodeVersion = (node -e 'process.stdout.write(process.versions.node)')
 $nodeMajor = [int]$nodeVersion.Split('.')[0]
