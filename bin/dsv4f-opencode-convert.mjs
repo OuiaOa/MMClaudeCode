@@ -74,12 +74,25 @@ export function deterministicUuid(seed) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** Windows path -> the same kind of encoded project-directory name Claude Code itself uses. */
+/**
+ * Encode a path the way Claude Code's own client does, so an imported session lands in the
+ * exact directory the real client will look under when you cd there and run `claude`/`dsv4f
+ * run` — otherwise it only ever resumes by explicit UUID and never appears in the picker.
+ *
+ * CONFIRMED LIVE BUG, fixed 2026-08-13: the previous version stripped the drive-letter colon
+ * and collapsed runs of slashes into a single '-', producing `C-Users-fr0dz3e-...` for
+ * `C:\Users\fr0dz3e\...`. Real Claude Code directories on the same machine (copied in
+ * byte-for-byte via dsv4f-import, never re-encoded) are `C--Users-fr0dz3e-...` — TWO dashes,
+ * because the real encoder replaces EACH separator character individually (':' -> '-', then
+ * '\' -> '-' right after it) rather than collapsing runs or dropping the colon. Every
+ * opencode-imported session was therefore written under a directory name Claude's own client
+ * would never compute for that real path — invisible to the interactive picker, resumable
+ * only by knowing the exact UUID. Verified against PC-4D's real project directories: both the
+ * Windows drive-letter case and the Linux `/home/fr0dz3e/...` -> `-home-fr0dz3e-...` case
+ * match this single-character-class replace exactly.
+ */
 export function encodeProjectDir(cwd) {
-  // Matches Claude Code's own scheme closely enough for a synthetic import: forward AND back
-  // slashes become '-', a leading drive-letter colon is dropped rather than kept (":"  is not
-  // filesystem-safe on Windows, and Claude Code's own encoder drops it the same way).
-  return cwd.replace(/^([A-Za-z]):/, '$1').replace(/[\\/]+/g, '-');
+  return cwd.replace(/[:\\/]/g, '-');
 }
 
 function textOfParts(parts) {

@@ -126,8 +126,11 @@ console.log('\n\x1b[1mtool call round-trip\x1b[0m');
   const toolResult = toolResultLine.message.content.find(b => b.type === 'tool_result');
   check('tool_result.tool_use_id matches tool_use.id exactly', toolResult?.tool_use_id === toolUse.id);
   check('tool_result content carries the real output', toolResult?.content === '{"ok":true}');
-  check('windows-style directory encodes to a safe project dir name',
-    encodeProjectDir(r.directory) === 'C-Users-test-Documents-proj', encodeProjectDir(r.directory));
+  check('windows-style directory encodes to match Claude Code\'s real scheme (double dash after drive letter)',
+    encodeProjectDir(r.directory) === 'C--Users-test-Documents-proj', encodeProjectDir(r.directory));
+  check('linux-style directory encodes to match Claude Code\'s real scheme (leading dash)',
+    encodeProjectDir('/home/fr0dz3e/some-project') === '-home-fr0dz3e-some-project',
+    encodeProjectDir('/home/fr0dz3e/some-project'));
 }
 
 console.log('\n\x1b[1munknown part type degrades visibly instead of vanishing\x1b[0m');
