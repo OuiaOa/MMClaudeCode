@@ -54,18 +54,46 @@ export function buildRerouteEnv({ port, sentinel }) {
 }
 
 /**
+ * Build the non-env extras reroute can ALSO carry into a real install — the polish that
+ * used to mean "you have to give up shared history with Desktop/opencode to get it" (only
+ * the isolated profile got these). Deliberately does NOT include `permissions` — that's the
+ * user's real, daily-driver install; silently changing how often it prompts them is a much
+ * bigger behavioral call than "which model backend to use", and unlike env vars it isn't
+ * reversible-by-inspection if they don't notice. Leave their own permission choice alone.
+ *
+ * denyListSrc is the dsv4f install's own SHIPPED copy (ROOT/deny-list.sh) — reused directly
+ * rather than copying it a second time into yet another location; it's already a stable
+ * path dsv4f itself manages, and only makes sense to wire up as a hook on non-Windows (it's
+ * a bash script — no POSIX shell guaranteed on Windows, same reasoning as statusline.sh's
+ * old platform gap that dsv4f-statusline.mjs replaced).
+ */
+export function buildRerouteExtras({ rootDir, platform = process.platform }) {
+  const extras = {
+    statusLine: { type: 'command', command: `node "${path.join(rootDir, 'bin', 'dsv4f-statusline.mjs')}"`, refreshInterval: 10 },
+    effortLevel: 'high',
+    skipWebFetchPreflight: true,
+  };
+  const denyListSrc = path.join(rootDir, 'deny-list.sh');
+  if (platform !== 'win32' && fs.existsSync(denyListSrc)) extras.denyListSrc = denyListSrc;
+  return extras;
+}
+
+/**
  * Apply the reroute to a settings.json, backing up the original first (or noting there was
- * nothing to back up, if the file didn't exist yet). Merges into `env` — never touches any
- * other top-level key, and never overwrites an env var the target file already set to
- * something else (so a user's own deliberate override survives a reroute, consistent with
- * how dsv4f-setup.mjs treats its own settings.json).
+ * nothing to back up, if the file didn't exist yet). Merges `env` key-by-key and each extras
+ * top-level key individually — never touches anything the target already has a value for
+ * (so a user's own deliberate customization always survives a reroute, consistent with how
+ * dsv4f-setup.mjs treats its own settings.json), and never overwrites an env var the target
+ * file already set to something else.
  *
  * @param {string} settingsPath
  * @param {object} envBlock       from buildRerouteEnv()
  * @param {string} backupDir
+ * @param {object} [extras]       from buildRerouteExtras() — statusLine/effortLevel/etc, and
+ *                                 optionally denyListSrc to wire up the PreToolUse hook
  * @returns {{applied: boolean, added: string[], backupPath: string|null}}
  */
-export function applyCliReroute(settingsPath, envBlock, backupDir) {
+export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) {
   let live = {};
   let hadExisting = false;
   if (fs.existsSync(settingsPath)) {
@@ -85,6 +113,25 @@ export function applyCliReroute(settingsPath, envBlock, backupDir) {
   const added = [];
   for (const [k, v] of Object.entries(envBlock)) {
     if (!(k in live.env)) { live.env[k] = v; added.push(k); }
+  }
+
+  const { denyListSrc, ...topLevelExtras } = extras;
+  for (const [k, v] of Object.entries(topLevelExtras)) {
+    if (!(k in live)) { live[k] = v; added.push(k); }
+  }
+  // hooks.PreToolUse is an array — a plain "add if key missing" check would silently skip
+  // adding our entry to an ALREADY-populated array (the user's own hook, or a leftover from
+  // an earlier reroute). Dedup by command string instead, same as dsv4f-setup.mjs's own
+  // isolated-profile logic, so re-running reroute never duplicates the hook.
+  if (denyListSrc) {
+    live.hooks ??= {};
+    live.hooks.PreToolUse ??= [];
+    const already = live.hooks.PreToolUse.some(h =>
+      Array.isArray(h?.hooks) && h.hooks.some(hh => String(hh?.command || '').includes('deny-list.sh')));
+    if (!already) {
+      live.hooks.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: `bash ${denyListSrc}`, timeout: 5 }] });
+      added.push('hooks.PreToolUse[deny-list]');
+    }
   }
 
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });

@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { buildRerouteEnv, applyCliReroute, revertCliReroute } from './bin/dsv4f-reroute.mjs';
+import { buildRerouteEnv, buildRerouteExtras, applyCliReroute, revertCliReroute } from './bin/dsv4f-reroute.mjs';
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4f-reroute-test-'));
 process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
@@ -126,6 +126,81 @@ console.log('\n\x1b[1mrevertCliReroute\x1b[0m');
   let threw = false;
   try { revertCliReroute(settingsPath, '/nonexistent/backup.json'); } catch { threw = true; }
   check('reverting with a missing backup path throws rather than silently no-op-ing', threw);
+}
+
+console.log('\n\x1b[1mbuildRerouteExtras\x1b[0m');
+{
+  const rootDir = path.join(SCRATCH, 'fake-root');
+  fs.mkdirSync(rootDir, { recursive: true });
+  fs.writeFileSync(path.join(rootDir, 'deny-list.sh'), '#!/bin/bash\necho ok\n');
+
+  const linuxExtras = buildRerouteExtras({ rootDir, platform: 'linux' });
+  check('statusLine points at dsv4f-statusline.mjs under rootDir/bin',
+    linuxExtras.statusLine.command.includes(path.join(rootDir, 'bin', 'dsv4f-statusline.mjs')));
+  check('effortLevel defaults to high', linuxExtras.effortLevel === 'high');
+  check('skipWebFetchPreflight is set', linuxExtras.skipWebFetchPreflight === true);
+  check('denyListSrc included on Linux when deny-list.sh exists', linuxExtras.denyListSrc === path.join(rootDir, 'deny-list.sh'));
+
+  const winExtras = buildRerouteExtras({ rootDir, platform: 'win32' });
+  check('denyListSrc NOT included on Windows even when deny-list.sh exists (bash script, no shell guarantee)',
+    winExtras.denyListSrc === undefined);
+
+  const noDenyList = buildRerouteExtras({ rootDir: path.join(SCRATCH, 'no-deny-list-here'), platform: 'linux' });
+  check('denyListSrc omitted when deny-list.sh does not exist at rootDir', noDenyList.denyListSrc === undefined);
+}
+
+console.log('\n\x1b[1mapplyCliReroute: extras (statusLine/effortLevel/deny-list hook)\x1b[0m');
+{
+  const dir = path.join(SCRATCH, 'extras-fresh');
+  fs.mkdirSync(dir, { recursive: true });
+  const settingsPath = path.join(dir, 'settings.json');
+  const rootDir = path.join(SCRATCH, 'fake-root'); // reuse the one with deny-list.sh from above
+  const extras = buildRerouteExtras({ rootDir, platform: 'linux' });
+
+  const r = applyCliReroute(settingsPath, buildRerouteEnv({ port: 8788, sentinel: 'extras1' }), path.join(dir, 'backup'), extras);
+  const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  check('statusLine was added', written.statusLine?.type === 'command');
+  check('effortLevel was added', written.effortLevel === 'high');
+  check('skipWebFetchPreflight was added', written.skipWebFetchPreflight === true);
+  check('deny-list PreToolUse hook was added', written.hooks?.PreToolUse?.some(h =>
+    h.hooks.some(hh => hh.command.includes('deny-list.sh'))));
+  check('permissions was NOT touched (extras deliberately excludes it)', written.permissions === undefined);
+  check('extras additions are reported in r.added', r.added.includes('statusLine') && r.added.includes('effortLevel'));
+}
+
+console.log('\n\x1b[1mapplyCliReroute: extras never overwrite an existing customization\x1b[0m');
+{
+  const dir = path.join(SCRATCH, 'extras-existing');
+  fs.mkdirSync(dir, { recursive: true });
+  const settingsPath = path.join(dir, 'settings.json');
+  fs.writeFileSync(settingsPath, JSON.stringify({
+    statusLine: { type: 'command', command: 'my-own-custom-statusline.sh' },
+    permissions: { defaultMode: 'bypassPermissions' },
+  }, null, 2));
+  const rootDir = path.join(SCRATCH, 'fake-root');
+  const extras = buildRerouteExtras({ rootDir, platform: 'linux' });
+
+  applyCliReroute(settingsPath, buildRerouteEnv({ port: 8788, sentinel: 'extras2' }), path.join(dir, 'backup'), extras);
+  const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  check('the user\'s own statusLine survives untouched', written.statusLine.command === 'my-own-custom-statusline.sh');
+  check('effortLevel was still added (it was missing)', written.effortLevel === 'high');
+  check('the user\'s own permissions setting survives untouched (extras never touches permissions at all)',
+    written.permissions.defaultMode === 'bypassPermissions');
+}
+
+console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicated on a second reroute\x1b[0m');
+{
+  const dir = path.join(SCRATCH, 'extras-dedup');
+  fs.mkdirSync(dir, { recursive: true });
+  const settingsPath = path.join(dir, 'settings.json');
+  const rootDir = path.join(SCRATCH, 'fake-root');
+  const extras = buildRerouteExtras({ rootDir, platform: 'linux' });
+
+  applyCliReroute(settingsPath, buildRerouteEnv({ port: 8788, sentinel: 'dedup1' }), path.join(dir, 'backup1'), extras);
+  applyCliReroute(settingsPath, buildRerouteEnv({ port: 8788, sentinel: 'dedup1' }), path.join(dir, 'backup2'), extras);
+  const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  check('exactly one deny-list hook entry after two reroute applications',
+    written.hooks.PreToolUse.filter(h => h.hooks.some(hh => hh.command.includes('deny-list.sh'))).length === 1);
 }
 
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);

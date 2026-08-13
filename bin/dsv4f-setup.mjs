@@ -296,12 +296,13 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'start'], { stdio: 'inheri
         console.log('  Anthropic later), say no here and you\'ll get the normal copy/move options next.');
         const rerouteAns = await ask('  Route the existing install through dsv4f? [Y/n] ');
         if (rerouteAns[0] !== 'n') {
-          const { buildRerouteEnv, applyCliReroute } = await import('./dsv4f-reroute.mjs');
+          const { buildRerouteEnv, buildRerouteExtras, applyCliReroute } = await import('./dsv4f-reroute.mjs');
           const { newBackupDir } = await import('./dsv4f-scrub.mjs');
           const cliSettingsPath = path.join(cliSource.paths.profile, 'settings.json');
           const backupDir = newBackupDir(PROFILE_DIR, 'cli-reroute');
           try {
-            const r = applyCliReroute(cliSettingsPath, buildRerouteEnv({ port, sentinel: SENTINEL }), backupDir);
+            const extras = buildRerouteExtras({ rootDir: ROOT, platform: process.platform });
+            const r = applyCliReroute(cliSettingsPath, buildRerouteEnv({ port, sentinel: SENTINEL }), backupDir, extras);
             console.log(bold(`  Rerouted ${cliSettingsPath}`));
             if (r.backupPath) console.log(`  (original backed up to ${r.backupPath})`);
             console.log(yel('  Note: any OTHER standalone Claude Code CLI install that reads this same'));
