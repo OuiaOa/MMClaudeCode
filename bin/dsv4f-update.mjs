@@ -214,10 +214,33 @@ function restartShim() {
     }
   }
 
-  const kill = process.platform === 'win32'
-    ? run('powershell.exe', ['-NoProfile', '-Command',
-        `Get-NetTCPConnection -LocalPort ${port} -State Listen -EA SilentlyContinue | Select-Object -Expand OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -EA SilentlyContinue }`], DATA)
-    : run('sh', ['-c', `lsof -ti tcp:${port} -sTCP:LISTEN | xargs -r kill`], DATA);
+  if (process.platform === 'win32') {
+    // CONFIRMED LIVE BUG, fixed 2026-08-13: this used to just kill the shim and stop, same
+    // as the generic non-systemd fallback below -- but on Windows that leaves it down
+    // indefinitely rather than "restarting on next use". A detached `dsv4f start` spawned
+    // over an SSH exec session gets killed the moment that SSH session ends (confirmed
+    // live on PC-4D: Windows OpenSSH tears down the whole job object, even a Node child
+    // spawned with detached:true) -- and even run locally, nothing guarantees the NEXT
+    // "use" is `dsv4f run`/`dsv4f start` specifically rather than an already-running
+    // `claude` session just making requests into a now-dead shim. The scheduled-task
+    // launcher (`claude-dsv4f-shim`, set up specifically because of Windows autostart
+    // unreliability -- see machine-inventory memory) is immune to both problems, since a
+    // scheduled task runs outside any interactive session's job object. Use it the same
+    // way the systemd branch above does: stop, then immediately bring it back up in one step.
+    const killResult = run('powershell.exe', ['-NoProfile', '-Command',
+      `Get-NetTCPConnection -LocalPort ${port} -State Listen -EA SilentlyContinue | Select-Object -Expand OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -EA SilentlyContinue }`], DATA);
+    if (!killResult.ok) { log('could not stop the shim; restart it yourself'); return; }
+    const task = run('schtasks', ['/query', '/tn', 'claude-dsv4f-shim'], DATA);
+    if (task.ok) {
+      const restart = run('schtasks', ['/run', '/tn', 'claude-dsv4f-shim'], DATA);
+      log(restart.ok ? 'shim restarted via scheduled task — running the new code'
+        : 'shim stopped, but the scheduled task failed to restart it — restart it yourself');
+    } else {
+      log('shim stopped — no scheduled-task launcher found; it restarts on the new code next time `dsv4f start`/`dsv4f run` is used');
+    }
+    return;
+  }
+  const kill = run('sh', ['-c', `lsof -ti tcp:${port} -sTCP:LISTEN | xargs -r kill`], DATA);
   log(kill.ok ? 'shim stopped — it restarts on the new code on next use' : 'could not stop the shim; restart it yourself');
 }
 
