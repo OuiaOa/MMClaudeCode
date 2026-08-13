@@ -238,7 +238,56 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'start'], { stdio: 'inheri
     if (TTY) {
       const rl = (await import('node:readline')).default.createInterface({ input: process.stdin, output: process.stdout });
       const ask = (q) => new Promise(res => rl.question(q, a => res(a.trim().toLowerCase())));
+
+      // Axis 3, asked FIRST and framed as the recommended path when a real CLI binary is
+      // present: point the EXISTING install at DeepSeek in place, rather than importing a
+      // copy into an isolated profile. Nothing gets copied, so the session switcher
+      // (left-arrow), background jobs, and memories are already perfect — they're the same
+      // real profile, just talking to a different backend. Copy-into-isolated-profile
+      // (below) genuinely cannot replicate that: the switcher is powered by Claude Code's
+      // own internal per-session job-tracking state, generated live as a session runs, not
+      // something a copied .jsonl file can carry with it (confirmed 2026-08-13 — see memory).
+      // Reroute's real cost, stated plainly rather than buried: it edits the real, shared
+      // settings.json in place, so a later "go back to standard Anthropic Claude Code" means
+      // reverting that edit (backed up, always revertible) rather than nothing to undo at
+      // all, which the copy-based path gives for free. That's why this is a recommendation,
+      // not a default applied silently.
+      const cliSource = present.find(s => s.id === 'claude-cli');
+      let cliRerouted = false;
+      if (cliSource?.binary) {
+        console.log(`\n  ${bold('Recommended: point Claude Code CLI directly at DeepSeek')}`);
+        console.log('  Keeps the real `claude` command working exactly as it does today — same session');
+        console.log('  switcher, same background jobs, same memories, nothing to import — it just never');
+        console.log('  bills Anthropic again. Edits its real settings.json in place (backed up first,');
+        console.log('  revertible any time). If you\'d rather keep a completely separate, isolated DeepSeek');
+        console.log('  profile instead (e.g. to keep the real install untouched for switching back to');
+        console.log('  Anthropic later), say no here and you\'ll get the normal copy/move options next.');
+        const rerouteAns = await ask('  Route the existing install through dsv4f? [Y/n] ');
+        if (rerouteAns[0] !== 'n') {
+          const { buildRerouteEnv, applyCliReroute } = await import('./dsv4f-reroute.mjs');
+          const { newBackupDir } = await import('./dsv4f-scrub.mjs');
+          const cliSettingsPath = path.join(cliSource.paths.profile, 'settings.json');
+          const backupDir = newBackupDir(PROFILE_DIR, 'cli-reroute');
+          try {
+            const r = applyCliReroute(cliSettingsPath, buildRerouteEnv({ port, sentinel: SENTINEL }), backupDir);
+            console.log(bold(`  Rerouted ${cliSettingsPath}`));
+            if (r.backupPath) console.log(`  (original backed up to ${r.backupPath})`);
+            console.log(yel('  Note: any OTHER standalone Claude Code CLI install that reads this same'));
+            console.log(yel('  settings.json will also be rerouted — they share one config file.'));
+            cliRerouted = true;
+            // The real install now talks to DeepSeek directly -- importing a copy into the
+            // isolated dsv4f profile too would just be redundant duplication of the same
+            // history, so claude-cli's own disposition is implicitly "leave" from here.
+            disposition['claude-cli'] = 'leave';
+          } catch (e) {
+            console.error(yel(`  Reroute failed: ${e.message}`));
+            console.log('  Falling through to the normal copy/move options for Claude Code CLI.');
+          }
+        }
+      }
+
       for (const s of present) {
+        if (s.id === 'claude-cli' && cliRerouted) continue; // already handled above
         const detail = s.id === 'opencode'
           ? (s.stats.error ? s.stats.error : `${s.stats.sessions} session(s)`)
           : s.id === 'claude-desktop'
@@ -260,37 +309,6 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'start'], { stdio: 'inheri
         console.log(yel('  since Claude Code CLI is set to keep them.'));
       }
 
-      // Axis 3: "keep Claude Code CLI installed, but stop paying Anthropic through it."
-      // Only offered when the CLI is actually being kept usable (leave/copy — 'remove'
-      // already achieves this by bundling+dropping credentials instead, and 'move' still
-      // leaves the CLI installed and pointed at Anthropic, which is a legitimate choice of
-      // its own that shouldn't be second-guessed here). Proven technique — see
-      // dsv4f-reroute.mjs's header — but ALWAYS asked, never applied silently, since it
-      // edits the user's real, shared settings.json in place.
-      const cliSource = present.find(s => s.id === 'claude-cli');
-      if (cliSource?.binary && ['leave', 'copy'].includes(disposition['claude-cli'] || 'leave')) {
-        console.log(`\n  ${bold('One more option')}`);
-        console.log('  Your Claude Code CLI is staying installed. It can ALSO be pointed at DeepSeek');
-        console.log('  through this same shim — so you keep using the real `claude` command, but it');
-        console.log('  never bills Anthropic again. This edits its real settings.json in place (backed');
-        console.log('  up first); you can revert it any time by restoring that backup.');
-        const rerouteAns = await ask('  Route it through dsv4f too? [y/N] ');
-        if (rerouteAns[0] === 'y') {
-          const { buildRerouteEnv, applyCliReroute } = await import('./dsv4f-reroute.mjs');
-          const { newBackupDir } = await import('./dsv4f-scrub.mjs');
-          const cliSettingsPath = path.join(cliSource.paths.profile, 'settings.json');
-          const backupDir = newBackupDir(PROFILE_DIR, 'cli-reroute');
-          try {
-            const r = applyCliReroute(cliSettingsPath, buildRerouteEnv({ port, sentinel: SENTINEL }), backupDir);
-            console.log(bold(`  Rerouted ${cliSettingsPath}`));
-            if (r.backupPath) console.log(`  (original backed up to ${r.backupPath})`);
-            console.log(yel('  Note: any OTHER standalone Claude Code CLI install that reads this same'));
-            console.log(yel('  settings.json will also be rerouted — they share one config file.'));
-          } catch (e) {
-            console.error(yel(`  Reroute failed: ${e.message}`));
-          }
-        }
-      }
       rl.close();
     } else {
       // Non-interactive: preserve the old default (auto-import, never destructive) and
