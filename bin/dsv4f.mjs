@@ -227,15 +227,21 @@ async function cmdRun(rest) {
 
   // CONFIRMED LIVE BUG, fixed 2026-08-13: resolveClaude() deliberately returns the bare
   // string 'claude' on Windows (see dsv4f-lib.mjs) so cmd.exe's PATHEXT resolves it to
-  // claude.cmd/.exe -- but that resolution is a SHELL feature. Without `shell: true` here,
-  // Node calls CreateProcess directly (bypassing cmd.exe entirely), so a bare 'claude' with
-  // no bundled binary present threw `spawn claude ENOENT` on every Windows machine using a
-  // PATH-installed (npm .cmd wrapper) Claude Code -- reproduced live on PC-4D. `claudeArgs`
-  // here is the local user's own CLI input, not untrusted/remote, so shell quoting risk is
-  // the same as them typing the command directly.
-  const child = spawn(claude,
-    ['--settings', path.join(PROFILE_DIR, 'settings.json'), ...claudeArgs],
-    { stdio: 'inherit', env: childEnv, shell: WIN });
+  // claude.cmd/.exe -- but that resolution is a SHELL feature. Without a shell here, Node
+  // calls CreateProcess directly (bypassing cmd.exe entirely), so a bare 'claude' with no
+  // bundled binary present threw `spawn claude ENOENT` on every Windows machine using a
+  // PATH-installed (npm .cmd wrapper) Claude Code -- reproduced live on PC-4D.
+  //
+  // `shell: true` with a separate args ARRAY makes Node just concatenate them unescaped
+  // (DEP0190) -- passing ONE pre-quoted command STRING instead is the documented way to
+  // avoid that while still going through cmd.exe for the .cmd/.bat PATHEXT resolution.
+  const settingsArg = path.join(PROFILE_DIR, 'settings.json');
+  const quoteForCmd = (a) => /[\s"&|<>^]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a;
+  const commandLine = WIN
+    ? [claude, '--settings', settingsArg, ...claudeArgs].map(quoteForCmd).join(' ')
+    : claude;
+  const spawnArgs = WIN ? [] : ['--settings', settingsArg, ...claudeArgs];
+  const child = spawn(commandLine, spawnArgs, { stdio: 'inherit', env: childEnv, shell: WIN });
   const code = await new Promise((resolve) => child.on('exit', (c) => resolve(c ?? 0)));
   process.exit(code);
 }
