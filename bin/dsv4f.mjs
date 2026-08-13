@@ -6,7 +6,9 @@
  *   dsv4f setup            first-time setup: key prompt, probe, profile, autostart
  *   dsv4f key <provider>   store/replace an API key (deepseek | deepinfra | openrouter)
  *   dsv4f start|stop|status  manage the shim process
- *   dsv4f run [args...]    launch Claude Code against the profile (imports on first run)
+ *   dsv4f [run] [args...]  launch Claude Code against the profile (imports on first run).
+ *                          `run` is implicit -- bare `dsv4f`, or any args that aren't a known
+ *                          subcommand (flags, a prompt), launch it the same way.
  *   dsv4f cap [amount]     show/set the DeepSeek daily cap
  *   dsv4f cap vision [amt] show/set the vision daily cap
  *
@@ -299,14 +301,17 @@ immediately, so a mangled paste fails now rather than at first use.
 Keys are written 0600 into ~/.config/claude-dsv4f/ and never enter Claude Code's environment;
 Claude Code authenticates to the local shim with a separate generated sentinel.`,
 
-    run: `${bold('dsv4f run')} [claude arguments...]
+    run: `${bold('dsv4f run')} [claude arguments...]  (also just ${bold('dsv4f')} -- 'run' is the default)
 
 Launch Claude Code against the DeepSeek profile. Everything after 'run' is passed through:
 
-  dsv4f run                          normal session
-  dsv4f run --effort ultracode       xhigh effort + workflow orchestration
-  dsv4f run --resume                 resume this directory's most recent session
-  dsv4f run -p "explain this repo"   one-shot
+  dsv4f                               normal session -- same as 'dsv4f run'
+  dsv4f run --effort ultracode        xhigh effort + workflow orchestration
+  dsv4f run --resume                  resume this directory's most recent session
+  dsv4f run -p "explain this repo"    one-shot
+
+Imported and prior sessions show up the normal Claude Code way -- the in-session switcher
+(left arrow) and --resume both read the same history; nothing special is needed to reach them.
 
 Starts the shim if it is not already up. On first run, imports your existing memories,
 transcripts and permissions from ~/.claude (see dsv4f-import).
@@ -368,7 +373,17 @@ reads your Anthropic credentials.
 `);
 }
 
-const [cmd, ...rest] = process.argv.slice(2);
+const KNOWN_COMMANDS = ['key', 'start', 'stop', 'status', 'run', 'cap', 'import', 'setup', 'help'];
+const HELP_FLAGS = ['help', '--help', '-h', '-help'];
+const [rawCmd, ...rawRest] = process.argv.slice(2);
+// Bare `dsv4f` (no subcommand), or any first token that isn't one of dsv4f's OWN literal
+// subcommand words, means "launch Claude Code" -- the whole point of this tool day-to-day.
+// That includes a genuine typo of a subcommand ('dsv4f ruun') -- it gets forwarded to claude
+// as an argument and claude reports the unrecognised-argument error itself, rather than dsv4f
+// needing its own duplicate notion of what a "valid" trailing argument looks like.
+const looksLikeRunArgs = !HELP_FLAGS.includes(rawCmd) &&
+  (rawCmd === undefined || rawCmd.startsWith('-') || !KNOWN_COMMANDS.includes(rawCmd));
+const [cmd, ...rest] = looksLikeRunArgs ? ['run', ...process.argv.slice(2)] : [rawCmd, ...rawRest];
 switch (cmd) {
   case 'key':    await cmdKey(rest[0]); break;
   case 'start':  await cmdStart(); break;
@@ -382,7 +397,7 @@ switch (cmd) {
     break;
   }
   case 'setup':  spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4f-setup.mjs'), ...rest], { stdio: 'inherit' }); break;
-  case 'help': case '--help': case '-h': case '-help': case undefined:
+  case 'help': case '--help': case '-h': case '-help':
     help(rest[0]); break;
   default:
     console.error(red(`unknown command '${cmd}'`));
