@@ -48,6 +48,7 @@ fs.writeFileSync(path.join(CONFIG_DIR, 'probe-results.json'), JSON.stringify({
 // ------------------------------------------------------------------ mock upstream
 const seen = [];
 let classifierRetryAttempts = 0;
+let exhaustAttempts = 0;
 const mock = http.createServer((req, res) => {
   let b = '';
   req.on('data', d => { b += d; });
@@ -67,6 +68,17 @@ const mock = http.createServer((req, res) => {
         content: [{ type: 'text', text: 'ok' }],
         usage: { input_tokens: 50, output_tokens: 5 },
       }));
+      return;
+    }
+
+    // Test hook: a classifier-shaped request carrying this marker ALWAYS fails the
+    // connection — every attempt, no eventual success. Exercises full retry exhaustion
+    // (confirmed live 2026-08-13: sustained DeepSeek peak-window degradation can outlast
+    // more than 2-3 quick attempts) — the shim must make its full configured attempt count,
+    // then give up cleanly with an error, never hang past that.
+    if (/EXHAUST_TEST_MARKER/.test(JSON.stringify(body.system ?? ''))) {
+      exhaustAttempts++;
+      req.socket.destroy();
       return;
     }
 
@@ -711,6 +723,22 @@ check('classifier V2: transient upstream failures are retried transparently (200
   retryResp.status === 200, `got ${retryResp.status}`);
 check('classifier V2: exactly 3 upstream attempts were made (2 failures + 1 success)',
   seen.length === retryBefore + 3, `got ${seen.length - retryBefore}`);
+
+// --- classifier V2: full retry exhaustion (widened 2026-08-13 from 3 to 5 attempts) ---
+const exhaustBefore = seen.length;
+const exhaustReq = {
+  model: 'deepseek-v4-flash', max_tokens: 100,
+  system: 'permission classifier decision EXHAUST_TEST_MARKER',
+  messages: [{ role: 'user', content: 'rm -rf /tmp/y' }],
+};
+const exhaustResp = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(exhaustReq),
+});
+check('classifier V2: exhausts all 5 attempts (not the old 3) before giving up',
+  seen.length === exhaustBefore + 5, `got ${seen.length - exhaustBefore}`);
+check('classifier V2: gives up cleanly with an error after exhaustion, never hangs',
+  exhaustResp.status >= 500, `got ${exhaustResp.status}`);
 
 // --- environment sanitizer ---
 // Send a request whose system contains is_background: true and degraded_mode: true;

@@ -1426,9 +1426,18 @@ async function handleMessages(req, res, rawBody) {
   // per-attempt timeouts, entirely before any bytes reach the client (headersSent stays
   // false until a real upstream response arrives) — regular traffic keeps its original
   // single-attempt behavior so this doesn't change latency or double-billing risk elsewhere.
-  const CLASSIFIER_MAX_ATTEMPTS = 3;
-  const CLASSIFIER_ATTEMPT_TIMEOUT_MS = 12000;
-  const CLASSIFIER_BACKOFF_MS = [250, 750];
+  //
+  // CONFIRMED LIVE 2026-08-13: the original 3-attempt/12s budget was not enough headroom.
+  // 17 "temporarily unavailable" failures in one real session over ~1 hour, every single one
+  // falling inside DeepSeek's own documented peak window (config's utcWindows [6,10] UTC) --
+  // a healthy-connection synthetic test succeeded in under 1.5s every time immediately after,
+  // confirming the shim/detection logic itself was working correctly; peak-window degradation
+  // was simply outlasting 3 quick retries. Widened to 5 attempts at a slightly shorter 10s
+  // each, with a longer backoff ramp -- worst case 5*10s + (250+500+1000+2000)ms = ~53.75s,
+  // still safely under the client's 60s deadline (~6s margin for network overhead).
+  const CLASSIFIER_MAX_ATTEMPTS = 5;
+  const CLASSIFIER_ATTEMPT_TIMEOUT_MS = 10000;
+  const CLASSIFIER_BACKOFF_MS = [250, 500, 1000, 2000];
 
   let currentUpReq = null;
   let clientAborted = false;
