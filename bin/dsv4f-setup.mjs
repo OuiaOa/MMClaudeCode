@@ -130,12 +130,20 @@ const settings = {
   },
   effortLevel: 'high',
   skipWebFetchPreflight: true,
-  // 'bypassPermissions' (skip everything) — there is no Anthropic classifier reachable
-  // behind the local shim, so any other mode would either constantly prompt (default) or
-  // hang on a classifier that calls api.anthropic.com directly (auto/acceptEdits). This
-  // is the documented "I trust this model" mode. To fall back to prompt-on-tool-call,
-  // change this to 'acceptEdits' (auto-approves common fs ops) or 'default' (manual).
-  permissions: { defaultMode: 'bypassPermissions' },
+  // Was 'bypassPermissions' (skip everything) from 2026-08-07, on the theory that any other
+  // mode would hang on a classifier reaching for api.anthropic.com directly. That reasoning
+  // stopped being true on 2026-08-10 when CLAUDE_CODE_TWO_STAGE_CLASSIFIER=0 (above) disabled
+  // the classifier subsystem entirely — nobody revisited bypass mode after that landed.
+  // CONFIRMED LIVE 2026-08-13: acceptEdits/default/auto all work correctly against this
+  // profile with the classifier disabled — no hangs, no errors, real tool calls (including
+  // chained Bash, the specific case that used to misbehave) and a real /compact all ran
+  // clean under every mode tested, verified against the shim's own journal (zero
+  // classifier/error/denial entries across the test). 'acceptEdits' is the new default:
+  // keeps the smooth auto-approve-routine-edits experience bypass gave, while restoring real
+  // prompting (backed by deny-list.sh's PreToolUse hook as the actual safety net either way)
+  // for anything the deny-list doesn't already catch. Change to 'default' for full manual
+  // confirmation, or back to 'bypassPermissions' if you want zero prompts again.
+  permissions: { defaultMode: 'acceptEdits' },
   ...(statusline ? { statusLine: statusline } : {}),
   ...(fs.existsSync(denyListDst) ? {
     hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `bash ${denyListDst}`, timeout: 5 }] }] },
@@ -165,6 +173,14 @@ if (!fs.existsSync(sPath)) {
     if (live.statusLine?.command && /statusline\.sh/.test(live.statusLine.command)) {
       live.statusLine = statusline;
       added.push('statusLine (migrated off statusline.sh)');
+    }
+    // Migrate an existing bypassPermissions setting to the new default (acceptEdits) — see
+    // the comment above `settings` for why. Only touches it if it's STILL the old default;
+    // if the user already changed it themselves (to anything else, including back to
+    // bypassPermissions deliberately), that choice is left alone.
+    if (live.permissions?.defaultMode === 'bypassPermissions') {
+      live.permissions.defaultMode = 'acceptEdits';
+      added.push('permissions.defaultMode (migrated off bypassPermissions)');
     }
     (function merge(dst, src, keyPath = '') {
       for (const [k, v] of Object.entries(src)) {
