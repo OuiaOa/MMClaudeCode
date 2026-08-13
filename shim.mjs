@@ -97,9 +97,16 @@ function readCapFile(file, fallback) {
 
 function readCap() { return readCapFile(CAP_FILE, cfg.cap?.dailyUsd ?? 5.0); }
 
-function utcDay(d = new Date()) { return d.toISOString().slice(0, 10); }
+/**
+ * Local calendar date (YYYY-MM-DD), not UTC — the daily cap is meant to reset at the user's
+ * own midnight, not UTC midnight. Ledger timestamps (`ts`) are stored as UTC ISO strings, so
+ * they're shifted by the local offset before formatting rather than sliced directly.
+ */
+function localDay(d = new Date()) {
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
 
-/** Ledger rows for the current UTC day, loaded from the tail of the file. */
+/** Ledger rows for the current local day, loaded from the tail of the file. */
 function loadTodayRows() {
   try {
     const st = fs.statSync(LEDGER_FILE);
@@ -109,13 +116,13 @@ function loadTodayRows() {
     const buf = Buffer.alloc(st.size - start);
     fs.readSync(fd, buf, 0, buf.length, start);
     fs.closeSync(fd);
-    const today = utcDay();
+    const today = localDay();
     const rows = [];
     for (const line of buf.toString('utf8').split('\n')) {
       if (!line.startsWith('{')) continue;      // skip a partial first line
       try {
         const r = JSON.parse(line);
-        if (r.ts && r.ts.slice(0, 10) === today) rows.push(r);
+        if (r.ts && localDay(new Date(r.ts)) === today) rows.push(r);
       } catch { /* ignore truncated */ }
     }
     return rows;
@@ -123,7 +130,7 @@ function loadTodayRows() {
 }
 
 let todayRows = loadTodayRows();
-let todayDay = utcDay();
+let todayDay = localDay();
 
 /**
  * Which provider a ledger row was billed to. Rows written before providers were distinguished
@@ -148,7 +155,7 @@ function spendToday(provider) {
 function todaySpend() { return spendToday('deepseek'); }
 
 function rollDayIfNeeded() {
-  const d = utcDay();
+  const d = localDay();
   if (d !== todayDay) { todayDay = d; todayRows = []; }
 }
 
@@ -1401,7 +1408,7 @@ async function handleMessages(req, res, rawBody) {
     log(`CAP HIT: $${spent.toFixed(4)} >= $${cap.toFixed(2)}`);
     // 403 not 429: Claude Code retries 429 with backoff, which would spin.
     return apiError(res, 403,
-      `claude-dsv4f: daily cap $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)} UTC ${todayDay}). ` +
+      `claude-dsv4f: daily cap $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}, ${todayDay}). ` +
       `Raise with: dsv4f-cap <amount>`, 'permission_error');
   }
 
