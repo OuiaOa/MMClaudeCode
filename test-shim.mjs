@@ -740,6 +740,27 @@ check('classifier V2: exhausts all 5 attempts (not the old 3) before giving up',
 check('classifier V2: gives up cleanly with an error after exhaustion, never hangs',
   exhaustResp.status >= 500, `got ${exhaustResp.status}`);
 
+// --- classifier V2: forced to minimal effort regardless of heuristic escalation ---
+// CONFIRMED LIVE BUG, fixed 2026-08-13: real classifier requests carry the session's own
+// MAIN model name (not a Haiku alias), so they never hit the slot:background shortcut and
+// fell through to the SAME long+keywords heuristic as regular chat -- caught live hitting
+// effort=ultra repeatedly on real classifier traffic, almost certainly why classifier calls
+// were timing out under DeepSeek's peak-load latency (an "ultra" response takes far longer
+// than a trivial yes/no check). Reuses the exact same hardPrompt that provably escalates
+// regular traffic to 'ultra' above, but tagged as classifier-shaped -- must come out 'none'.
+const classifierHardReq = {
+  model: 'deepseek-v4-flash', max_tokens: 200,
+  system: 'permission classifier decision: shouldBlock this command?',
+  messages: [{ role: 'user', content: hardPrompt }],
+};
+const classifierHardResp = await (await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+  method: 'POST', headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+  body: JSON.stringify(classifierHardReq),
+})).json();
+check('classifier traffic forced to minimal effort even with heuristic-escalating content',
+  seen[seen.length - 1].body.thinking?.type === 'disabled',
+  JSON.stringify(seen[seen.length - 1].body.thinking ?? seen[seen.length - 1].body.output_config));
+
 // --- environment sanitizer ---
 // Send a request whose system contains is_background: true and degraded_mode: true;
 // the shim must rewrite them to false BEFORE forwarding to upstream.

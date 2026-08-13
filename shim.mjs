@@ -621,8 +621,24 @@ function isUltracode(key) {
   return true;
 }
 
-function decideEffort(body, slot, sessionKey) {
+function decideEffort(body, slot, sessionKey, isClassifierV2 = false) {
   const E = cfg.effort;
+
+  // CONFIRMED LIVE BUG, fixed 2026-08-13: the comment below ("classifiers never need to
+  // think") assumed classifier traffic always carries a Haiku-labeled model name and so
+  // always lands on slot:background below. That's false for the CURRENT two-stage XML
+  // classifier specifically: it carries the session's own MAIN model name (deepseek-v4-flash
+  // here, not a Haiku alias), so it fell through to full heuristic escalation like any other
+  // main-slot request. Caught live: real classifier calls repeatedly hit effort=ultra via the
+  // long+keywords heuristic (a large accumulated conversation naturally has long/keyword-rich
+  // content), meaning every classification was doing full deep-reasoning work instead of a
+  // fast yes/no check -- almost certainly the real reason classifier calls were timing out
+  // under DeepSeek's peak-load latency (a heavy "ultra" response simply takes far longer than
+  // a trivial one), not just insufficient retry budget. Force minimal effort for classifier
+  // traffic BEFORE any slot/heuristic logic runs, regardless of which slot the model name
+  // itself resolved to -- classifierV2 is an orthogonal signal, not tied to slot routing.
+  if (isClassifierV2) return { effort: 'none', why: 'classifierV2' };
+
   const incomingRaw =
     body?.[EFFORT_FIELD]?.effort ??
     body?.output_config?.effort ??
@@ -1397,7 +1413,7 @@ async function handleMessages(req, res, rawBody) {
   // Effort is decided BEFORE images are substituted. Afterwards the "last user text" is the
   // vision model's exhaustive description, which would drive the heuristic and silently
   // escalate every screenshot turn to max effort.
-  const { effort, why } = decideEffort(body, resolved.slot, sessionKey);
+  const { effort, why } = decideEffort(body, resolved.slot, sessionKey, classifierV2);
 
   const vis = await substituteImages(body);
   if (vis.images) {
