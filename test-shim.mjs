@@ -755,6 +755,31 @@ check('model mapper: claude-3-5-haiku forwarded as deepseek-* to upstream',
 check('model mapper: haiku traffic lands on background slot (effort:none), not main:high',
   seen[seen.length - 1].body.thinking?.type === 'disabled');
 
+// Allowlist design (2026-08-13): current flagships -> main; EVERYTHING else Anthropic-shaped
+// (any Haiku generation, any non-current Sonnet/Opus/Fable generation, any future unlisted
+// name) -> background. This is the actual behavior change from the old blocklist approach —
+// claude-3-5-sonnet/claude-3-opus used to map to main, now correctly default to background
+// since they aren't current flagships.
+r = await send({ ...msg(), model: 'claude-opus-5-20251101' });
+check('model mapper: current flagship (opus-5) -> main (effort:high, thinking enabled)',
+  r.last?.body?.output_config?.effort === 'high' && r.last?.body?.thinking?.type !== 'disabled',
+  JSON.stringify({ output_config: r.last?.body?.output_config, thinking: r.last?.body?.thinking }));
+
+r = await send({ ...msg(), model: 'claude-sonnet-5-20251101' });
+check('model mapper: current flagship (sonnet-5) -> main', r.last?.body?.output_config?.effort === 'high');
+
+r = await send({ ...msg(), model: 'claude-3-5-sonnet-20241022' });
+check('model mapper: non-current sonnet (3-5) -> background, NOT main (was the old behavior)',
+  r.last?.body?.thinking?.type === 'disabled', JSON.stringify(r.last?.body?.thinking));
+
+r = await send({ ...msg(), model: 'claude-3-opus-20240229' });
+check('model mapper: non-current opus (3) -> background, NOT main (was the old behavior)',
+  r.last?.body?.thinking?.type === 'disabled', JSON.stringify(r.last?.body?.thinking));
+
+r = await send({ ...msg(), model: 'claude-sonnet-9-hypothetical-future-model' });
+check('model mapper: unlisted future generation defaults safely to background, not main',
+  r.last?.body?.thinking?.type === 'disabled', JSON.stringify(r.last?.body?.thinking));
+
 // --- response sanitizer (Bash tool_use with is_background: true) ---
 // The mock upstream returns a Bash tool_use block with is_background: true when the user
 // prompt is exactly 'mark for bash test'. The shim must rewrite is_background to false

@@ -334,24 +334,49 @@ function environmentSanitizer(body) {
 // ----------------------------------------- internal model mapping
 
 /**
- * Claude Code uses standard Anthropic model names (claude-3-5-haiku*, claude-3-7-sonnet*,
- * claude-3-opus*) for internal sub-routines — context compaction, subagent dispatch,
- * window topic detection — even when ANTHROPIC_BASE_URL points at us. Translate those to
- * the configured DeepSeek model so resolveModel() slot-routes them correctly instead of
- * warning "unmapped Claude model". DeepSeek-* names are passed through unchanged.
+ * Claude Code uses standard Anthropic model names for internal sub-routines — context
+ * compaction, subagent dispatch, window topic detection — even when ANTHROPIC_BASE_URL
+ * points at us. Confirmed via measured live traffic (2026-08-10): these specifically send
+ * `claude-3-5-haiku*`, deliberately pinned by Anthropic's own client to an old, cheap,
+ * stable model regardless of whatever "main" flagship generation the user is actually
+ * chatting with — that pin is what caused the ~25-50x cost bug this mapper exists to fix,
+ * since an unmapped haiku request fell through to `model` at main-slot effort:high.
+ *
+ * ALLOWLIST current flagships to 'main'; everything else Anthropic-shaped defaults to
+ * 'background'. Deliberately NOT a blocklist of specific old generations (claude-3-5-haiku,
+ * claude-3-opus, ...): model generations only ever increase, so an old blocklist needs
+ * updating forever and fails UNSAFE — an unlisted-but-actually-old name silently gets
+ * full-effort main-model treatment, the exact bug this mapper exists to prevent. An
+ * allowlist fails SAFE instead: anything not currently known just defaults to cheap
+ * background routing, which is also the correct outcome for the NEXT internal-housekeeping
+ * pin the moment today's flagship becomes tomorrow's "old" model (as claude-3-5-haiku
+ * itself illustrates — it was presumably a current flagship once too).
+ *
+ * REVIEW MONTHLY: confirm this list still matches Anthropic's actual current flagship
+ * lineup, and spot-check real traffic (shim log / vlog output) to confirm current-model
+ * requests land on 'main' while everything else lands on 'background'. Last verified
+ * 2026-08-13 against Claude Code v2.1.229 (binary `strings` search): claude-opus-5,
+ * claude-sonnet-5, claude-fable-5 exist; no claude-haiku-5 yet (still 4.5) — Haiku is
+ * deliberately excluded regardless of generation, since it's the fast/cheap tier by
+ * definition and CLAUDE_CODE's own ANTHROPIC_DEFAULT_HAIKU_MODEL is already set to the
+ * background sentinel for exactly that reason.
  */
+const CURRENT_MAIN_MODELS = [
+  /^claude-opus-5\b/i,
+  /^claude-sonnet-5\b/i,
+  /^claude-fable-5\b/i,
+];
+
 function modelMapper(body, cfg) {
   if (!body || typeof body !== 'object') return null;
   const m = String(body.model || '');
-  if (/^claude-(?:3-5|3)-haiku/i.test(m) || /^claude-3-haiku/i.test(m)) {
-    body.model = cfg.fastModel || cfg.model;
-    return { mapped: 'haiku -> ' + body.model };
-  }
-  if (/^claude-(?:3-5|3-7)-sonnet/i.test(m) || /^claude-3-opus/i.test(m)) {
+  if (!/^claude-/i.test(m)) return null; // not Anthropic-shaped — nothing to map
+  if (CURRENT_MAIN_MODELS.some(re => re.test(m))) {
     body.model = cfg.model;
-    return { mapped: 'sonnet/opus -> ' + body.model };
+    return { mapped: m + ' -> ' + body.model + ' (current flagship -> main)' };
   }
-  return null;
+  body.model = cfg.fastModel || cfg.model;
+  return { mapped: m + ' -> ' + body.model + ' (non-current -> background)' };
 }
 
 // ----------------------------------------- response sanitizers
