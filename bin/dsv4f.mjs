@@ -290,15 +290,21 @@ function capCmd(rest) {
 
 function help(topic) {
   const H = {
-    setup: `${bold('dsv4f setup')} [--rekey] [--no-vision]
+    setup: `${bold('dsv4f setup')} [--rekey] [--no-vision] [--reprobe]
 
 First-time setup. Prompts for your DeepSeek API key (hidden — never echoed, never in argv or
 shell history), offers an optional DeepInfra key for screenshots, probes the endpoint to
 calibrate itself against what it actually does, writes the isolated Claude Code profile, and
 starts the shim.
 
-  --rekey       replace the stored DeepSeek key
+  --rekey       replace the stored DeepSeek key (also re-probes — a new key/account could
+                behave differently)
   --no-vision   skip the DeepInfra prompt entirely
+  --reprobe     force a fresh endpoint probe even if a cached result already exists
+
+The probe (a few cents, but several minutes — it times real API calls at every effort level)
+only runs once and is cached; re-running setup later (e.g. to pick up a new feature) skips it
+by default instead of re-measuring something that hasn't changed.
 
 Safe to re-run: an existing config.json is never overwritten.`,
 

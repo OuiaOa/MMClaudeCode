@@ -60,9 +60,25 @@ if (!fs.existsSync(path.join(CONFIG_DIR, 'deepinfra-key')) && !process.argv.incl
   }
 }
 
-// probe — calibrates the shim against what the endpoint actually does
-console.log(bold('\nProbing endpoint behaviour...'));
-spawnSync(node, [path.join(ROOT, 'probe.mjs')], { stdio: 'inherit' });
+// probe — calibrates the shim against what the endpoint actually does. Results are cached to
+// probe-results.json and the shim reads them at startup (falling back to documented defaults
+// if the file is missing) — genuinely needed on first setup (DeepSeek's own docs contradict
+// each other on the exact response shape), but re-measuring it on EVERY re-run of `dsv4f
+// setup` was pure waste: the slow part (the effort ladder) makes 6 real, deliberately
+// slow-at-high-effort API calls purely to TIME them, several minutes each — a user re-running
+// setup just to pick up a new feature (e.g. reroute) had no way to skip 15-20 minutes of
+// re-measuring something that hasn't changed. Skip whenever a cached result already exists,
+// unless the key just changed (--rekey, since a different account could behave differently)
+// or the user explicitly asks for a fresh measurement (--reprobe).
+const probeResultsPath = path.join(CONFIG_DIR, 'probe-results.json');
+const needsProbe = !fs.existsSync(probeResultsPath) || process.argv.includes('--reprobe') || process.argv.includes('--rekey');
+if (needsProbe) {
+  console.log(bold('\nProbing endpoint behaviour...'));
+  spawnSync(node, [path.join(ROOT, 'probe.mjs')], { stdio: 'inherit' });
+} else {
+  const probedAt = fs.statSync(probeResultsPath).mtime.toISOString().slice(0, 10);
+  console.log(`\nUsing cached endpoint probe from ${probedAt} (pass --reprobe to re-measure).`);
+}
 
 // profile
 const port = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).port || 8788;
