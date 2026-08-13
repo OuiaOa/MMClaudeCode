@@ -416,7 +416,19 @@ switch (cmd) {
     process.exit(r.status ?? 0);
     break;
   }
-  case 'setup':  spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4f-setup.mjs'), ...rest], { stdio: 'inherit' }); break;
+  case 'setup':
+    // CONFIRMED LIVE BUG, fixed 2026-08-13: only cmdRun() called autoUpdateCheck(), so
+    // `dsv4f setup` (no prior `dsv4f run` on this machine — the exact shape of a fresh
+    // install) could run whatever code happened to be on disk at that moment, missing a
+    // fix that landed on GitHub in between. Confirmed on Work-PC: a reroute ran against
+    // stale bin/dsv4f-setup.mjs, silently missing the statusLine/effortLevel/deny-list
+    // extras a slightly newer commit had already added (env alone still worked, since
+    // that part of the code was unchanged) -- required a manual re-apply to fix. Setup
+    // is exactly the command a fresh install runs before ever calling `dsv4f run` once,
+    // so it needs its own update check, not a reliance on run's.
+    autoUpdateCheck();
+    spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4f-setup.mjs'), ...rest], { stdio: 'inherit' });
+    break;
   case 'help': case '--help': case '-h': case '-help':
     help(rest[0]); break;
   default:
