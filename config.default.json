@@ -48,6 +48,13 @@
       "escalateTo": "ultra",
       "onlyWhenAuto": true
     },
+    "tierDefaults": {
+      "_comment": "Reasoning-effort DEFAULT for each Claude Desktop/Cowork logical tier (see `desktop.tierModelIds` below), used only when the client sends no explicit effort/thinking field of its own — an explicit client value always wins. Claude Code CLI is unaffected: it always sends its own effort field (see _autoSemantics), so this only matters for Desktop/Cowork traffic. Optional — omitting this key entirely falls back to the same values hard-coded in shim.mjs.",
+      "fable": "max",
+      "opus": "max",
+      "sonnet": "high",
+      "haiku": "none"
+    },
     "ultracodeTtlMinutes": 120,
     "_measuredEnum": "MEASURED 2026-08-06 from a live 400: low|medium|high|xhigh|ultra|max. There is NO none — thinking is disabled via thinking:{type:disabled} instead. `ultra` is undocumented.",
     "ultrathinkEscalateTo": "max",
@@ -95,6 +102,15 @@
   "limits": {
     "maxOutputTokens": 384000,
     "maxRequestBytes": 268435456
+  },
+  "desktop": {
+    "_comment": "Claude Desktop/Cowork model discovery (GET /v1/models). External, Claude-looking model IDs exposed for each logical tier — all four ultimately reach `model` (deepseek-v4-flash) only, never deepseek-v4-pro: transformRequest() force-sets the outgoing model on every /v1/messages call regardless of which tier resolved it. Optional — omitting this key entirely falls back to the same IDs hard-coded in shim.mjs.",
+    "tierModelIds": {
+      "opus": "claude-opus-5",
+      "sonnet": "claude-sonnet-5",
+      "fable": "claude-fable-5",
+      "haiku": "claude-haiku-4-5-20251001"
+    }
   },
   "cacheHygiene": {
     "stripUserId": true,

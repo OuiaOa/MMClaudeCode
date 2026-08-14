@@ -386,6 +386,45 @@ function modelMapper(body, cfg) {
   return { mapped: m + ' -> ' + body.model + ' (non-current -> background)' };
 }
 
+/**
+ * Desktop/Cowork logical tiers (Fable/Opus/Sonnet/Haiku), each exposed as an external
+ * Claude-looking model ID via /v1/models discovery and modelMapper()/resolveModel() above so
+ * every one of them ultimately reaches `cfg.model` (deepseek-v4-flash) — never V4 Pro, since
+ * transformRequest() unconditionally force-sets body.model = MODEL right before the upstream
+ * call regardless of which tier or slot the request resolved to. These constants are
+ * fallbacks only: a config.json predating this feature has neither `desktop.tierModelIds` nor
+ * `effort.tierDefaults`, and existing installs must keep working without regenerating config —
+ * see resolveTierModelIds()/tierOf()/decideEffort() for where the config value, when present,
+ * takes precedence over these.
+ */
+const DEFAULT_TIER_MODEL_IDS = {
+  opus: 'claude-opus-5',
+  sonnet: 'claude-sonnet-5',
+  fable: 'claude-fable-5',
+  haiku: 'claude-haiku-4-5-20251001',
+};
+const DEFAULT_TIER_REASONING_DEFAULTS = { fable: 'max', opus: 'max', sonnet: 'high', haiku: 'none' };
+
+function resolveTierModelIds() {
+  return { ...DEFAULT_TIER_MODEL_IDS, ...(cfg.desktop?.tierModelIds || {}) };
+}
+
+/**
+ * Matches the tier's exact external model ID with a `\b` word boundary, the same convention
+ * CURRENT_MAIN_MODELS uses — so a dated variant (e.g. the configured ID plus `-20260101`) still
+ * matches, but a different family whose name happens to start the same way does not. Checked
+ * against the ORIGINAL requested model, before modelMapper() overwrites body.model.
+ */
+function tierOf(model) {
+  const m = String(model || '');
+  const ids = resolveTierModelIds();
+  for (const [tier, id] of Object.entries(ids)) {
+    if (!id) continue;
+    if (new RegExp('^' + id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(m)) return tier;
+  }
+  return null;
+}
+
 // ----------------------------------------- response sanitizers
 
 /** Recognises a command that legitimately wants to run in the background. Conservative. */
@@ -628,7 +667,7 @@ function isUltracode(key) {
   return true;
 }
 
-function decideEffort(body, slot, sessionKey, isClassifierV2 = false) {
+function decideEffort(body, slot, sessionKey, isClassifierV2 = false, tier = null) {
   const E = cfg.effort;
 
   // CONFIRMED LIVE BUG, fixed 2026-08-13: the comment below ("classifiers never need to
@@ -667,8 +706,14 @@ function decideEffort(body, slot, sessionKey, isClassifierV2 = false) {
   }
 
   // main slot
-  let effort = translated || E.slotDefaults.main;
-  let why = translated ? 'client' : 'slot:main';
+  // Desktop/Cowork tiers (Fable/Opus/Sonnet) don't necessarily send an explicit effort field
+  // the way Claude Code CLI always does (see _autoSemantics above), so when the client left it
+  // unset, a known tier's own default takes priority over the flat slot default — this is what
+  // gives Sonnet a lower default (high) than Opus/Fable (max) despite all three sharing the
+  // 'main' slot. A client-specified effort (translated) always wins regardless of tier.
+  const tierDefault = tier ? (E.tierDefaults?.[tier] ?? DEFAULT_TIER_REASONING_DEFAULTS[tier]) : null;
+  let effort = translated || tierDefault || E.slotDefaults.main;
+  let why = translated ? 'client' : (tierDefault ? `tier:${tier}` : 'slot:main');
 
   if (effort === 'none') return { effort, why };
 
@@ -1372,6 +1417,12 @@ async function handleMessages(req, res, rawBody) {
   try { body = JSON.parse(rawBody); }
   catch { return apiError(res, 400, 'claude-dsv4f: request body is not valid JSON'); }
 
+  // ---- NEW: Desktop/Cowork tier detection --------------------------------------
+  // Must run BEFORE modelMapper() rewrites body.model, since tierOf() matches against the
+  // external, Claude-looking ID the client actually requested (claude-opus-5 etc.), not the
+  // internal deepseek-v4-flash* sentinel modelMapper() replaces it with.
+  const desktopTier = tierOf(body.model);
+
   // ---- NEW: internal model mapping -------------------------------------------
   // Run before resolveModel so the mapped name is what the slot router sees.
   const mapLog = modelMapper(body, cfg);
@@ -1420,7 +1471,7 @@ async function handleMessages(req, res, rawBody) {
   // Effort is decided BEFORE images are substituted. Afterwards the "last user text" is the
   // vision model's exhaustive description, which would drive the heuristic and silently
   // escalate every screenshot turn to max effort.
-  const { effort, why } = decideEffort(body, resolved.slot, sessionKey, classifierV2);
+  const { effort, why } = decideEffort(body, resolved.slot, sessionKey, classifierV2, desktopTier);
 
   const vis = await substituteImages(body);
   if (vis.images) {
@@ -1439,7 +1490,7 @@ async function handleMessages(req, res, rawBody) {
   const streaming = body.stream === true;
   const started = Date.now();
 
-  vlog(`-> ${resolved.slot} effort=${effort} (${why}) stream=${streaming} bytes=${outBody.length}${classifierV2 ? ' [classifier]' : ''}`);
+  vlog(`-> ${resolved.slot}${desktopTier ? ` tier=${desktopTier}` : ''} effort=${effort} (${why}) stream=${streaming} bytes=${outBody.length}${classifierV2 ? ' [classifier]' : ''}`);
 
   // Auto-mode's two-stage classifier runs against a hard client-side deadline (60s stage-1
   // budget) and fails CLOSED — a denied tool call, not a retry — when it doesn't get a
@@ -1632,6 +1683,35 @@ function scheduleSettlePoll() {
   settleTimer.unref?.();
 }
 
+/**
+ * Synthetic Anthropic-shaped /v1/models response for Claude Desktop/Cowork's "Discover
+ * Models" gateway probe — see Upgrade Shim.md #3. Desktop expects Claude-looking model IDs,
+ * not DeepSeek's own catalogue, so this deliberately does NOT passthrough to the real
+ * upstream (unlike count_tokens etc): it returns exactly the four logical tiers, each of
+ * which is guaranteed to reach deepseek-v4-flash only (transformRequest() force-sets
+ * body.model = MODEL on every /v1/messages request regardless of tier, so there is no path
+ * from a discovered tier to V4 Pro or any other upstream model).
+ *
+ * Shape follows the real Anthropic GET /v1/models response (`{data: [...], has_more,
+ * first_id, last_id}`, each entry `{type: "model", id, display_name, created_at}`) since that
+ * is what Desktop's client code expects to parse.
+ */
+function buildModelsResponse() {
+  const ids = resolveTierModelIds();
+  const order = ['opus', 'sonnet', 'fable', 'haiku'];
+  const label = { opus: 'Opus', sonnet: 'Sonnet', fable: 'Fable', haiku: 'Haiku' };
+  const now = new Date().toISOString();
+  const data = order
+    .filter((tier) => ids[tier])
+    .map((tier) => ({
+      type: 'model',
+      id: ids[tier],
+      display_name: `${label[tier]} (claude-dsv4f → DeepSeek V4 Flash)`,
+      created_at: now,
+    }));
+  return { data, has_more: false, first_id: data[0]?.id ?? null, last_id: data[data.length - 1]?.id ?? null };
+}
+
 function passthrough(req, res, rawBody, subpath) {
   const outBody = Buffer.from(rawBody);
   const upReq = UPSTREAM_MOD.request({
@@ -1707,6 +1787,13 @@ const server = http.createServer((req, res) => {
         log('handleMessages failed:', e.message);
         if (!res.headersSent) apiError(res, 500, `claude-dsv4f: ${e.message}`, 'api_error');
       });
+    }
+    // Desktop/Cowork's model-discovery probe. GET only, and deliberately intercepted rather
+    // than passed through to DeepSeek's real /v1/models — see buildModelsResponse(). Any
+    // other method to this path (unused today) falls through to the existing passthrough
+    // behaviour below, unchanged.
+    if (url.pathname === '/v1/models' && req.method === 'GET') {
+      return sendJson(res, 200, buildModelsResponse());
     }
     if (url.pathname === '/v1/messages/count_tokens') {
       if (!COUNT_TOKENS_SUPPORTED) {

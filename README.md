@@ -87,6 +87,28 @@ Claude Code is pointed at a local shim on `127.0.0.1:8788` rather than at Anthro
 - **holds the key.** The real API key never enters Claude Code's environment; Claude Code
   authenticates to the shim with a locally generated sentinel.
 
+## Claude Desktop / Cowork
+
+The shim also works as a Gateway for Claude Desktop and Cowork — it's the same
+Anthropic-compatible `/v1/messages` endpoint the CLI already uses, so no separate mode or
+process is needed. In Desktop's Gateway settings:
+
+- **Gateway URL**: `http://127.0.0.1:8788` (or your configured `port`/`bind`)
+- **Auth**: either `Authorization: Bearer <sentinel>` or `x-api-key: <sentinel>` — the sentinel
+  is the same one at `~/.config/claude-dsv4f/sentinel` the CLI profile already uses.
+- **Discover Models**: `GET /v1/models` returns four logical tiers — Fable, Opus, Sonnet,
+  Haiku — each a Claude-looking model ID (`claude-fable-5`, `claude-opus-5`, `claude-sonnet-5`,
+  `claude-haiku-4-5-20251001` by default; see `desktop.tierModelIds` below to change them).
+
+All four tiers resolve to the single configured `model` only — the shim force-sets the
+outgoing model on every request regardless of tier, so there is no path to a different or
+pricier upstream model. Reasoning defaults per tier (used only when Desktop doesn't send its
+own explicit effort/thinking preference — an explicit one always wins): Fable and Opus default
+to `max`, Sonnet to `high`, Haiku to thinking-disabled. See `effort.tierDefaults` below.
+
+Everything else — streaming, tool calls, images (via the same vision sidecar), long contexts —
+works exactly as it does for the CLI, since Desktop and the CLI share this one endpoint.
+
 ## Files
 
 | | |
@@ -108,7 +130,7 @@ angle, spatial overlap, orientation and partial occlusion. About a cent and 90 s
 ## Tests
 
 ```bash
-node test-shim.mjs        # 77 unit tests against a mock endpoint, no spend
+node test-shim.mjs        # unit tests against a mock endpoint, no spend
 ./e2e/run-e2e.sh all      # real sessions against the real API (costs a few cents)
 ```
 
@@ -131,6 +153,8 @@ editing (`dsv4f stop && dsv4f start`, or `systemctl --user restart claude-dsv4f-
 | `peakSurcharge` | DeepSeek announced 2× peak pricing but has not activated it. Enable if it goes live. |
 | `cap.dailyUsd` | DeepSeek daily cap. Overridden by the `cap` file / `dsv4f cap`. |
 | `vision.*` | model, endpoint, rates, `dailyCapUsd`, and `promptVersion` — bumping the last invalidates every cached description. |
+| `desktop.tierModelIds` | external Claude-looking model IDs Desktop discovers via `/v1/models`, one per logical tier (`opus`/`sonnet`/`fable`/`haiku`). Optional — omitting it falls back to the same IDs built into `shim.mjs`. |
+| `effort.tierDefaults` | reasoning-effort default per Desktop tier, used only when the client sends no explicit effort of its own. Optional, same fallback pattern as above. |
 
 ## Troubleshooting
 

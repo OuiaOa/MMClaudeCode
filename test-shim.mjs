@@ -809,13 +809,20 @@ check('model mapper: haiku traffic lands on background slot (effort:none), not m
 // name) -> background. This is the actual behavior change from the old blocklist approach —
 // claude-3-5-sonnet/claude-3-opus used to map to main, now correctly default to background
 // since they aren't current flagships.
+// Opus/Fable tier default is 'max' (not the flat slot default 'high') when the client sends
+// no explicit effort field — see decideEffort()'s tierDefault. Real Claude Code CLI traffic is
+// unaffected in practice (it always sends output_config.effort itself, per _autoSemantics),
+// so this only matters for a Desktop/Cowork-style client that leaves it unset, which is what
+// `msg()` here simulates.
 r = await send({ ...msg(), model: 'claude-opus-5-20251101' });
-check('model mapper: current flagship (opus-5) -> main (effort:high, thinking enabled)',
-  r.last?.body?.output_config?.effort === 'high' && r.last?.body?.thinking?.type !== 'disabled',
+check('model mapper: current flagship (opus-5) -> main, tier default max (thinking enabled)',
+  r.last?.body?.output_config?.effort === 'max' && r.last?.body?.thinking?.type !== 'disabled',
   JSON.stringify({ output_config: r.last?.body?.output_config, thinking: r.last?.body?.thinking }));
 
+// Sonnet's tier default is 'high', same as the flat slot default, so this also covers the
+// no-tier-match fallback path staying correct.
 r = await send({ ...msg(), model: 'claude-sonnet-5-20251101' });
-check('model mapper: current flagship (sonnet-5) -> main', r.last?.body?.output_config?.effort === 'high');
+check('model mapper: current flagship (sonnet-5) -> main, tier default high', r.last?.body?.output_config?.effort === 'high');
 
 r = await send({ ...msg(), model: 'claude-3-5-sonnet-20241022' });
 check('model mapper: non-current sonnet (3-5) -> background, NOT main (was the old behavior)',
@@ -875,6 +882,111 @@ check('response sanitizer: is_background key rewritten to false',
   parsedInput?.is_background === false, JSON.stringify(parsedInput));
 check('response sanitizer: literal "is_background":true INSIDE the command string survives untouched',
   parsedInput?.command === 'echo \'{"is_background":true}\' > /tmp/config.json', parsedInput?.command);
+
+// --- Claude Desktop/Cowork: /v1/models discovery ---
+console.log('\n\x1b[1mdesktop: /v1/models discovery\x1b[0m');
+
+{
+  const r = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/models`, {
+    headers: { authorization: `Bearer ${SENTINEL}` },
+  });
+  const j = await r.json();
+  check('GET /v1/models: 200 with Bearer auth', r.status === 200);
+  check('GET /v1/models: returns exactly the 4 logical tiers', Array.isArray(j.data) && j.data.length === 4,
+    JSON.stringify(j.data));
+  check('GET /v1/models: every entry is Anthropic-shaped (type:model, id, display_name)',
+    j.data.every(m => m.type === 'model' && typeof m.id === 'string' && typeof m.display_name === 'string'),
+    JSON.stringify(j.data));
+  const ids = j.data.map(m => m.id);
+  check('GET /v1/models: includes the configured tier IDs (opus/sonnet/fable/haiku)',
+    ids.includes(cfg.desktop?.tierModelIds?.opus ?? 'claude-opus-5') &&
+    ids.includes(cfg.desktop?.tierModelIds?.sonnet ?? 'claude-sonnet-5') &&
+    ids.includes(cfg.desktop?.tierModelIds?.fable ?? 'claude-fable-5') &&
+    ids.includes(cfg.desktop?.tierModelIds?.haiku ?? 'claude-haiku-4-5-20251001'),
+    JSON.stringify(ids));
+  check('GET /v1/models: does NOT passthrough to the real DeepSeek catalogue (no deepseek-* id)',
+    !ids.some(id => /deepseek/i.test(id)), JSON.stringify(ids));
+
+  // Second auth scheme required by the doc: x-api-key, not just Authorization: Bearer.
+  const r2 = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/models`, { headers: { 'x-api-key': SENTINEL } });
+  check('GET /v1/models: 200 with x-api-key auth', r2.status === 200);
+
+  const r3 = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/models`);
+  check('GET /v1/models: 401 with no auth at all', r3.status === 401);
+}
+
+// --- Desktop/Cowork: per-tier reasoning-effort defaults ---
+console.log('\n\x1b[1mdesktop: per-tier reasoning defaults\x1b[0m');
+
+r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.fable ?? 'claude-fable-5' });
+check('Fable tier with no client effort -> max',
+  r.last?.body?.output_config?.effort === 'max', JSON.stringify(r.last?.body?.output_config));
+
+r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.opus ?? 'claude-opus-5' });
+check('Opus tier with no client effort -> max',
+  r.last?.body?.output_config?.effort === 'max', JSON.stringify(r.last?.body?.output_config));
+
+r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.sonnet ?? 'claude-sonnet-5' });
+check('Sonnet tier with no client effort -> high',
+  r.last?.body?.output_config?.effort === 'high', JSON.stringify(r.last?.body?.output_config));
+
+r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.haiku ?? 'claude-haiku-4-5-20251001' });
+check('Haiku tier with no client effort -> thinking disabled (effort:none), same as background slot',
+  r.last?.body?.thinking?.type === 'disabled', JSON.stringify(r.last?.body?.thinking));
+
+// A client-specified effort always overrides the tier default, for any tier.
+r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.opus ?? 'claude-opus-5', output_config: { effort: 'low' } });
+check('Opus tier: explicit client effort (low) overrides the tier default (max)',
+  r.last?.body?.output_config?.effort === 'low', JSON.stringify(r.last?.body?.output_config));
+
+// All four tiers must reach the exact same upstream model (deepseek-v4-flash) and never
+// deepseek-v4-pro, regardless of tier or effort — the doc's hard release-blocking requirement.
+{
+  const tierIds = [
+    cfg.desktop?.tierModelIds?.fable ?? 'claude-fable-5',
+    cfg.desktop?.tierModelIds?.opus ?? 'claude-opus-5',
+    cfg.desktop?.tierModelIds?.sonnet ?? 'claude-sonnet-5',
+    cfg.desktop?.tierModelIds?.haiku ?? 'claude-haiku-4-5-20251001',
+  ];
+  const results = [];
+  for (const id of tierIds) {
+    const rr = await send({ ...msg(), model: id });
+    results.push(rr.last?.body?.model);
+  }
+  check('all 4 tiers resolve upstream model to cfg.model (deepseek-v4-flash) only',
+    results.every(m => m === cfg.model), JSON.stringify(results));
+  check('zero tiers ever reach deepseek-v4-pro', !results.some(m => /pro/i.test(String(m))), JSON.stringify(results));
+}
+
+// --- concurrency: two simultaneous streaming requests must not mix content ---
+console.log('\n\x1b[1mconcurrency: isolated simultaneous streams\x1b[0m');
+
+{
+  const streamReq = (marker) => ({
+    model: 'deepseek-v4-flash', max_tokens: 100, stream: true,
+    messages: [{ role: 'user', content: marker }],
+  });
+  const fetchStream = async (marker) => {
+    const res = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${SENTINEL}`, 'content-type': 'application/json' },
+      body: JSON.stringify(streamReq(marker)),
+    });
+    return res.text();
+  };
+  // Both requests hit the same mock handler concurrently; the mock's own response content is
+  // identical either way ("ok"), so this test's job is specifically to confirm the shim's
+  // per-connection SseSanitizer/UsageSniffer state (this.buf/this.held/etc, all constructed
+  // fresh per call to handleMessages) never cross-writes onto the other response's socket —
+  // i.e. each concurrent res.write() lands only on its own connection.
+  const [bodyA, bodyB] = await Promise.all([fetchStream('concurrent-A'), fetchStream('concurrent-B')]);
+  const wellFormed = (b) => b.includes('message_start') && b.includes('message_stop') &&
+    !b.includes('undefined') && b.split('event: message_stop').length === 2;
+  check('concurrent stream A is well-formed and complete', wellFormed(bodyA), bodyA.slice(0, 200));
+  check('concurrent stream B is well-formed and complete', wellFormed(bodyB), bodyB.slice(0, 200));
+  check('concurrent streams did not get concatenated onto one connection',
+    bodyA !== bodyB || bodyA.split('event: message_start').length === 2);
+}
 
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
 if (fail) console.log('shim log:\n' + shimLog);
