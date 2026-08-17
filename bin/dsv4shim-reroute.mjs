@@ -79,7 +79,41 @@ export function buildRerouteExtras({ rootDir, platform = process.platform }) {
   };
   const denyListSrc = path.join(rootDir, 'deny-list.sh');
   if (platform !== 'win32' && fs.existsSync(denyListSrc)) extras.denyListSrc = denyListSrc;
+  // Where applyCliReroute() should copy agents/ and skills/ FROM. Carried as an extra so the
+  // caller does not need to know the layout of the install directory.
+  extras.assetsRoot = rootDir;
   return extras;
+}
+
+/**
+ * Copy the shipped agents/ and skills/ trees into a Claude Code CONFIG directory.
+ *
+ * Both installers copy these next to the binary, into the INSTALL directory — which Claude
+ * Code never reads. It discovers them under its config dir (`~/.claude`, or the isolated
+ * profile), so shipped skills have been present-but-invisible on every machine since they
+ * were added, and the six subagents would have been too. Found while deploying 2026-08-18.
+ *
+ * Copied rather than symlinked on purpose: the config dir may sit on a different volume, and
+ * Windows needs a privilege for symlinks that an ordinary install does not have.
+ *
+ * An existing destination entry is left alone, so an agent or skill the user edited in place
+ * survives an update instead of being silently reverted.
+ */
+export function installPortableAssets(configDir, rootDir) {
+  const installed = [];
+  for (const kind of ['agents', 'skills']) {
+    const src = path.join(rootDir, kind);
+    if (!fs.existsSync(src)) continue;
+    const dest = path.join(configDir, kind);
+    fs.mkdirSync(dest, { recursive: true });
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+      const to = path.join(dest, entry.name);
+      if (fs.existsSync(to)) continue;
+      fs.cpSync(path.join(src, entry.name), to, { recursive: true });
+      installed.push(`${kind}/${entry.name}`);
+    }
+  }
+  return installed;
 }
 
 /**
@@ -119,7 +153,9 @@ export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) 
     if (!(k in live.env)) { live.env[k] = v; added.push(k); }
   }
 
-  const { denyListSrc, ...topLevelExtras } = extras;
+  // assetsRoot and denyListSrc are instructions to THIS function, not settings keys — strip
+  // them or they get written verbatim into the user's settings.json.
+  const { denyListSrc, assetsRoot: _assetsRoot, ...topLevelExtras } = extras;
   for (const [k, v] of Object.entries(topLevelExtras)) {
     if (!(k in live)) { live[k] = v; added.push(k); }
   }
@@ -135,6 +171,19 @@ export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) 
     if (!already) {
       live.hooks.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: `bash ${denyListSrc}`, timeout: 5 }] });
       added.push('hooks.PreToolUse[deny-list]');
+    }
+  }
+
+  // Agents and skills live in the CONFIG dir, which is the directory holding settings.json —
+  // not the install dir the installers copy them to. Without this a rerouted machine has the
+  // files on disk and Claude Code never sees them.
+  if (extras.assetsRoot) {
+    try {
+      const assets = installPortableAssets(path.dirname(settingsPath), extras.assetsRoot);
+      if (assets.length) added.push(...assets.map(a => `asset:${a}`));
+    } catch (e) {
+      // Never fail a reroute over optional extras — the env block is the part that matters.
+      console.error(`  warning: could not install agents/skills: ${e.message}`);
     }
   }
 

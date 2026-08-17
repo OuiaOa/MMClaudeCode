@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { buildRerouteEnv, buildRerouteExtras, applyCliReroute, revertCliReroute } from './bin/dsv4shim-reroute.mjs';
+import { buildRerouteEnv, buildRerouteExtras, applyCliReroute, revertCliReroute, installPortableAssets } from './bin/dsv4shim-reroute.mjs';
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-reroute-test-'));
 process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
@@ -210,6 +210,43 @@ console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicat
   const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   check('exactly one deny-list hook entry after two reroute applications',
     written.hooks.PreToolUse.filter(h => h.hooks.some(hh => hh.command.includes('deny-list.sh'))).length === 1);
+}
+
+
+// --- agents/skills reach the CONFIG dir ------------------------------------------
+// Both installers copy these next to the binary, into the INSTALL dir, which Claude Code
+// never reads — it discovers them under the config dir. Shipped skills were therefore
+// present-but-invisible on every machine; found while deploying 2026-08-18.
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'assets-src-'));
+  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'assets-cfg-'));
+  fs.mkdirSync(path.join(root, 'agents'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'skills', 'demo-skill'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'agents', 'a.md'), 'agent');
+  fs.writeFileSync(path.join(root, 'skills', 'demo-skill', 'SKILL.md'), 'skill');
+
+  const added = installPortableAssets(cfg, root);
+  check('agents land in the config dir, not the install dir',
+    fs.existsSync(path.join(cfg, 'agents', 'a.md')), JSON.stringify(added));
+  check('skills copy as whole directories',
+    fs.existsSync(path.join(cfg, 'skills', 'demo-skill', 'SKILL.md')), JSON.stringify(added));
+
+  // A user who edits a shipped agent must not have it silently reverted on the next update.
+  fs.writeFileSync(path.join(cfg, 'agents', 'a.md'), 'MINE');
+  installPortableAssets(cfg, root);
+  check('a locally edited asset is never overwritten',
+    fs.readFileSync(path.join(cfg, 'agents', 'a.md'), 'utf8') === 'MINE');
+
+  // assetsRoot tells applyCliReroute where to copy FROM; it is not a settings key, and
+  // writing it verbatim would leave a stray absolute path in the user's settings.json.
+  const sp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'assets-set-')), 'settings.json');
+  applyCliReroute(sp, { A: '1' }, path.join(os.tmpdir(), 'assets-bak'),
+                  { ...buildRerouteExtras({ rootDir: root, platform: 'linux' }) });
+  const written = JSON.parse(fs.readFileSync(sp, 'utf8'));
+  check('assetsRoot never leaks into settings.json', !('assetsRoot' in written),
+    JSON.stringify(Object.keys(written)));
+  check('reroute installs the assets alongside the env block',
+    fs.existsSync(path.join(path.dirname(sp), 'agents', 'a.md')));
 }
 
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
