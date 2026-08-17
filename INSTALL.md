@@ -55,7 +55,7 @@ Open **PowerShell** (press Start, type `powershell`, press Enter).
 ```powershell
 # 1. Download and unpack
 cd $HOME\Downloads
-curl.exe -L -o dsv4shim.zip https://github.com/OuiaOa/claude-dsv4f/archive/refs/heads/main.zip
+curl.exe -L -o dsv4shim.zip https://github.com/OuiaOa/dsv4shim/archive/refs/heads/main.zip
 tar -xf dsv4shim.zip
 cd dsv4shim-main
 
@@ -112,7 +112,7 @@ Open **Terminal** (⌘-Space, type `terminal`).
 
 ```bash
 cd ~/Downloads
-curl -L -o dsv4shim.zip https://github.com/OuiaOa/claude-dsv4f/archive/refs/heads/main.zip
+curl -L -o dsv4shim.zip https://github.com/OuiaOa/dsv4shim/archive/refs/heads/main.zip
 unzip -q dsv4shim.zip
 cd dsv4shim-main
 
@@ -137,7 +137,7 @@ first launch and nothing thereafter.
 
 ```bash
 cd ~/Downloads
-curl -L -o dsv4shim.zip https://github.com/OuiaOa/claude-dsv4f/archive/refs/heads/main.zip
+curl -L -o dsv4shim.zip https://github.com/OuiaOa/dsv4shim/archive/refs/heads/main.zip
 unzip -q dsv4shim.zip
 cd dsv4shim-main
 
