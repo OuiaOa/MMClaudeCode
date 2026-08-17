@@ -1,6 +1,6 @@
 # Agents
 
-Claude Code subagent definitions that ship with the dsv4f profile. Each `.md` file is one
+Claude Code subagent definitions that ship with the dsv4shim profile. Each `.md` file is one
 agent: YAML frontmatter (`name`, `description`, `tools`) followed by the instructions the
 agent runs under. Claude Code discovers them under `<config-dir>/agents/`.
 

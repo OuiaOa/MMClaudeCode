@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Tests for bin/dsv4f-opencode-convert.mjs against a synthetic SQLite fixture built to
+ * Tests for bin/dsv4shim-opencode-convert.mjs against a synthetic SQLite fixture built to
  * match opencode's real schema (captured live from PC-4D, 10.147.18.245, 2026-08-12).
  *
  * The converter itself was additionally validated against REAL opencode data on that
@@ -16,12 +16,12 @@ import os from 'node:os';
 import { createRequire } from 'node:module';
 import {
   convertSession, deterministicUuid, encodeProjectDir, listSessions, openDb,
-} from './bin/dsv4f-opencode-convert.mjs';
+} from './bin/dsv4shim-opencode-convert.mjs';
 
 const require = createRequire(import.meta.url);
 const DatabaseSync = (() => { try { return require('node:sqlite').DatabaseSync; } catch { return null; } })();
 
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4f-oc-convert-test-'));
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-oc-convert-test-'));
 process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
 
 let pass = 0, fail = 0;
@@ -30,7 +30,7 @@ function check(name, cond, detail = '') {
   else { console.log(`  \x1b[31m✗\x1b[0m ${name}${detail ? `  -> ${detail}` : ''}`); fail++; }
 }
 
-console.log('\n\x1b[1mdsv4f-opencode-convert tests\x1b[0m\n');
+console.log('\n\x1b[1mdsv4shim-opencode-convert tests\x1b[0m\n');
 
 if (!DatabaseSync) {
   console.log('\x1b[33mnode:sqlite unavailable (need Node 22.5+) — skipping all tests\x1b[0m\n');

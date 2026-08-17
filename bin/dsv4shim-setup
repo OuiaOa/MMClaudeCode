@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# claude-dsv4f-setup — one-time setup for Claude Code on DeepSeek V4 Flash 0731.
+# dsv4shim-setup — one-time setup for Claude Code on DeepSeek V4 Flash 0731.
 #
 # Prompts for your DeepSeek API key with echo disabled, stores it 0600, calibrates the
 # shim against the live endpoint, and installs the systemd --user service.
@@ -9,9 +9,9 @@
 
 set -euo pipefail
 
-CONFIG_DIR="${DSV4F_CONFIG_DIR:-$HOME/.config/claude-dsv4f}"
-DATA_DIR="${DSV4F_DATA_DIR:-$HOME/.local/share/claude-dsv4f}"
-PROFILE_DIR="$HOME/.claude-dsv4f"
+CONFIG_DIR="${DSV4SHIM_CONFIG_DIR:-$HOME/.config/dsv4shim}"
+DATA_DIR="${DSV4SHIM_DATA_DIR:-$HOME/.local/share/dsv4shim}"
+PROFILE_DIR="$HOME/.dsv4shim"
 UNIT_DIR="$HOME/.config/systemd/user"
 
 KEY_FILE="$CONFIG_DIR/key"
@@ -26,7 +26,7 @@ for a in "$@"; do
     --rekey) REKEY=1 ;;
     -h|--help)
       cat <<'EOF'
-Usage: claude-dsv4f-setup [--rekey] [--probe]
+Usage: dsv4shim-setup [--rekey] [--probe]
 
   (no args)  full setup: key prompt, probe, install + start service
   --rekey    replace the stored API key, then re-probe and restart
@@ -43,7 +43,7 @@ fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$PROFILE_DIR" "$UNIT_DIR"
 chmod 700 "$CONFIG_DIR"
 
-[[ -f "$CONFIG_FILE" ]] || fail "Missing $CONFIG_FILE — reinstall claude-dsv4f."
+[[ -f "$CONFIG_FILE" ]] || fail "Missing $CONFIG_FILE — reinstall dsv4shim."
 command -v node >/dev/null || fail "node not found on PATH."
 
 # ---------------------------------------------------------------- API key entry
@@ -74,7 +74,7 @@ if [[ $PROBE_ONLY -eq 0 ]]; then
     else
       fail "No terminal available for hidden input.
 Run this directly in your terminal, or write the key to the file yourself:
-  install -m600 /dev/null $KEY_FILE && printf '%s' 'sk-...' > $KEY_FILE && claude-dsv4f-setup --probe"
+  install -m600 /dev/null $KEY_FILE && printf '%s' 'sk-...' > $KEY_FILE && dsv4shim-setup --probe"
     fi
     key="${key//[$'\r\n\t ']/}"   # tolerate stray whitespace from a paste
     [[ -n "$key" ]] || fail "Empty key, aborted."
@@ -122,7 +122,7 @@ node "$DATA_DIR/probe.mjs"
 
 # ------------------------------------------------------------ profile settings
 
-PORT="$(node -e 'process.stdout.write(String(process.env.DSV4F_PORT || JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port || 8788))' "$CONFIG_FILE")"
+PORT="$(node -e 'process.stdout.write(String(process.env.DSV4SHIM_PORT || JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port || 8788))' "$CONFIG_FILE")"
 
 cat > "$PROFILE_DIR/settings.json" <<EOF
 {
@@ -139,7 +139,7 @@ cat > "$PROFILE_DIR/settings.json" <<EOF
 
     "ANTHROPIC_CUSTOM_MODEL_OPTION": "deepseek-v4-flash",
     "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "DeepSeek V4 Flash 0731",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "DeepSeek V4 Flash 0731 via local claude-dsv4f shim",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "DeepSeek V4 Flash 0731 via local dsv4shim shim",
 
     "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
     "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
@@ -170,9 +170,9 @@ bold "Wrote $PROFILE_DIR/settings.json (mode 0600)"
 
 # ------------------------------------------------------------- systemd service
 
-cat > "$UNIT_DIR/claude-dsv4f-shim.service" <<EOF
+cat > "$UNIT_DIR/dsv4shim-shim.service" <<EOF
 [Unit]
-Description=claude-dsv4f shim (Claude Code -> DeepSeek V4 Flash)
+Description=dsv4shim shim (Claude Code -> DeepSeek V4 Flash)
 After=network-online.target
 
 [Service]
@@ -188,29 +188,29 @@ WantedBy=default.target
 EOF
 
 systemctl --user daemon-reload
-systemctl --user enable claude-dsv4f-shim.service >/dev/null 2>&1 || true
-systemctl --user restart claude-dsv4f-shim.service
+systemctl --user enable dsv4shim-shim.service >/dev/null 2>&1 || true
+systemctl --user restart dsv4shim-shim.service
 
 sleep 1
-if systemctl --user is-active --quiet claude-dsv4f-shim.service; then
+if systemctl --user is-active --quiet dsv4shim-shim.service; then
   bold "Service running."
 else
-  warn "Service failed to start. Check: journalctl --user -u claude-dsv4f-shim -n 50"
+  warn "Service failed to start. Check: journalctl --user -u dsv4shim-shim -n 50"
   exit 1
 fi
 
-health="$(curl -s "http://127.0.0.1:$PORT/_dsv4f/health" || true)"
+health="$(curl -s "http://127.0.0.1:$PORT/_dsv4shim/health" || true)"
 echo "  health: ${health:-no response}"
 
 cat <<EOF
 
 $(bold "Setup complete.")
 
-  Launch          : claude-dsv4f
-  Ultracode       : claude-dsv4f --effort ultracode    (or /effort ultracode in-session)
-  Spend + tokens  : dsv4f-usage
-  Daily cap       : dsv4f-cap            (show)   dsv4f-cap 10   (set \$10)
-  Logs            : journalctl --user -u claude-dsv4f-shim -f
+  Launch          : dsv4shim
+  Ultracode       : dsv4shim --effort ultracode    (or /effort ultracode in-session)
+  Spend + tokens  : dsv4shim-usage
+  Daily cap       : dsv4shim-cap            (show)   dsv4shim-cap 10   (set \$10)
+  Logs            : journalctl --user -u dsv4shim-shim -f
 
 Your normal 'claude' is untouched and still uses your Anthropic subscription.
 EOF

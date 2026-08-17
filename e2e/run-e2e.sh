@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end test of the real installed claude-dsv4f: a real Claude Code session, against the
+# End-to-end test of the real installed dsv4shim: a real Claude Code session, against the
 # real DeepSeek endpoint, with real screenshots routed through the real vision model.
 #
 # Each scenario plants a defect that is visible ONLY in the render — the numbers that collide
@@ -11,8 +11,8 @@
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_DIR="${DSV4F_CONFIG_DIR:-$HOME/.config/claude-dsv4f}"
-DATA_DIR="${DSV4F_DATA_DIR:-$HOME/.local/share/claude-dsv4f}"
+CONFIG_DIR="${DSV4SHIM_CONFIG_DIR:-$HOME/.config/dsv4shim}"
+DATA_DIR="${DSV4SHIM_DATA_DIR:-$HOME/.local/share/dsv4shim}"
 LEDGER="$DATA_DIR/usage.jsonl"
 WORK="$DIR/tmp"
 mkdir -p "$WORK"
@@ -30,9 +30,9 @@ ds_requests()  { count_rows '"provider":"deepseek"'; }
 
 run_claude() {           # run_claude <cwd> <prompt-file> -> stdout captured to $OUT
   local cwd="$1" promptfile="$2"
-  ( cd "$cwd" && CLAUDE_CONFIG_DIR="$HOME/.claude-dsv4f" \
+  ( cd "$cwd" && CLAUDE_CONFIG_DIR="$HOME/.dsv4shim" \
       timeout 900 claude -p "$(cat "$promptfile")" \
-        --settings "$HOME/.claude-dsv4f/settings.json" 2>&1 )
+        --settings "$HOME/.dsv4shim/settings.json" 2>&1 )
 }
 
 # --------------------------------------------------------------------- scenario: game
@@ -140,8 +140,8 @@ EOF
 }
 
 # --------------------------------------------------------------------------- main
-printf '\033[1mclaude-dsv4f end-to-end\033[0m\n'
-curl -sf -m 3 "http://127.0.0.1:$(node -e 'process.stdout.write(String(process.env.DSV4F_PORT||JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port||8788))' "$CONFIG_DIR/config.json")/_dsv4f/health" >/dev/null \
+printf '\033[1mdsv4shim end-to-end\033[0m\n'
+curl -sf -m 3 "http://127.0.0.1:$(node -e 'process.stdout.write(String(process.env.DSV4SHIM_PORT||JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port||8788))' "$CONFIG_DIR/config.json")/_dsv4shim/health" >/dev/null \
   && echo "  shim: healthy" || { echo "  shim: NOT RESPONDING — aborting"; exit 1; }
 
 case "${1:-all}" in

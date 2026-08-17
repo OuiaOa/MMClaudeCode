@@ -3,7 +3,7 @@
  * Cross-platform first-time setup: key, probe, profile, autostart.
  *
  * On Linux with systemd this installs a --user unit. Elsewhere (Windows, or a systemd-less
- * Linux) the shim is started on demand by `dsv4f run`, which is why there is no service to
+ * Linux) the shim is started on demand by `dsv4shim run`, which is why there is no service to
  * install there — one less thing to break, at the cost of a ~1s first launch.
  */
 import fs from 'node:fs';
@@ -14,9 +14,9 @@ import { spawnSync } from 'node:child_process';
 const HOME = os.homedir();
 const WIN = process.platform === 'win32';
 const ROOT = path.resolve(import.meta.dirname, '..');
-const CONFIG_DIR = process.env.DSV4F_CONFIG_DIR || path.join(HOME, '.config', 'claude-dsv4f');
-const DATA_DIR = process.env.DSV4F_DATA_DIR || path.join(HOME, '.local', 'share', 'claude-dsv4f');
-const PROFILE_DIR = path.join(HOME, '.claude-dsv4f');
+const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
+const DATA_DIR = process.env.DSV4SHIM_DATA_DIR || path.join(HOME, '.local', 'share', 'dsv4shim');
+const PROFILE_DIR = path.join(HOME, '.dsv4shim');
 
 const bold = s => `\x1b[1m${s}\x1b[0m`;
 const yel = s => `\x1b[33m${s}\x1b[0m`;
@@ -39,7 +39,7 @@ const SENTINEL = fs.readFileSync(sentinelPath, 'utf8').trim();
 
 // key
 if (!fs.existsSync(path.join(CONFIG_DIR, 'key')) || process.argv.includes('--rekey')) {
-  const r = spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'key', 'deepseek'], { stdio: 'inherit' });
+  const r = spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'key', 'deepseek'], { stdio: 'inherit' });
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 if (!fs.readFileSync(path.join(CONFIG_DIR, 'key'), 'utf8').trim()) { console.error('No key stored.'); process.exit(1); }
@@ -50,11 +50,11 @@ if (!fs.existsSync(path.join(CONFIG_DIR, 'deepinfra-key')) && !process.argv.incl
   console.log(`\n${bold('Screenshots (optional)')}`);
   console.log('DeepSeek cannot accept images, so screenshots are transcribed by a vision model');
   console.log('on DeepInfra. Skip this if you will not paste screenshots on this machine —');
-  console.log('you can add it later with: dsv4f key deepinfra\n');
+  console.log('you can add it later with: dsv4shim key deepinfra\n');
   const rl = (await import('node:readline')).createInterface({ input: process.stdin, output: process.stdout });
   const want = await new Promise(res => rl.question('Add a DeepInfra key now? [y/N] ', a => { rl.close(); res(a.trim().toLowerCase()); }));
   if (want === 'y' || want === 'yes') {
-    spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'key', 'deepinfra'], { stdio: 'inherit' });
+    spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'key', 'deepinfra'], { stdio: 'inherit' });
   } else {
     console.log(yel('Skipped — screenshots will report that vision is unconfigured.'));
   }
@@ -63,7 +63,7 @@ if (!fs.existsSync(path.join(CONFIG_DIR, 'deepinfra-key')) && !process.argv.incl
 // probe — calibrates the shim against what the endpoint actually does. Results are cached to
 // probe-results.json and the shim reads them at startup (falling back to documented defaults
 // if the file is missing) — genuinely needed on first setup (DeepSeek's own docs contradict
-// each other on the exact response shape), but re-measuring it on EVERY re-run of `dsv4f
+// each other on the exact response shape), but re-measuring it on EVERY re-run of `dsv4shim
 // setup` was pure waste: the slow part (the effort ladder) makes 6 real, deliberately
 // slow-at-high-effort API calls purely to TIME them, several minutes each — a user re-running
 // setup just to pick up a new feature (e.g. reroute) had no way to skip 15-20 minutes of
@@ -82,10 +82,10 @@ if (needsProbe) {
 
 // profile
 const port = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).port || 8788;
-// Cross-platform on every OS — see dsv4f-statusline.mjs's header for why this replaced the
+// Cross-platform on every OS — see dsv4shim-statusline.mjs's header for why this replaced the
 // old bash+curl statusline.sh (that script never ran on Windows, which has no guaranteed
 // POSIX shell, so every Windows install silently missed the cost display entirely).
-const statusline = { type: 'command', command: `node "${path.join(ROOT, 'bin', 'dsv4f-statusline.mjs')}"`, refreshInterval: 10 };
+const statusline = { type: 'command', command: `node "${path.join(ROOT, 'bin', 'dsv4shim-statusline.mjs')}"`, refreshInterval: 10 };
 
 // deny-list.sh ships with the package (a PreToolUse guardrail — bypassPermissions mode has
 // no other check on destructive commands) but never overwrite a hand-tuned copy, matching
@@ -155,7 +155,7 @@ if (!fs.existsSync(sPath)) {
   fs.writeFileSync(sPath, JSON.stringify(settings, null, 2) + '\n');
   console.log(bold(`Wrote ${sPath}`));
 } else {
-  // Re-running setup (a "reinstall", or picking up a new dsv4f version's defaults) used to
+  // Re-running setup (a "reinstall", or picking up a new dsv4shim version's defaults) used to
   // blindly overwrite this file, silently destroying anything hand-tuned in it — including,
   // on at least one box, the statusLine and deny-list hook wiring themselves, which existed
   // there only because an earlier session added them directly rather than through this
@@ -217,9 +217,9 @@ try { fs.chmodSync(sPath, 0o600); } catch { /* Windows */ }   // embeds the sent
 if (!WIN && spawnSync('systemctl', ['--user', '--version'], { stdio: 'ignore' }).status === 0) {
   const unitDir = path.join(HOME, '.config', 'systemd', 'user');
   fs.mkdirSync(unitDir, { recursive: true });
-  fs.writeFileSync(path.join(unitDir, 'claude-dsv4f-shim.service'),
+  fs.writeFileSync(path.join(unitDir, 'dsv4shim-shim.service'),
 `[Unit]
-Description=claude-dsv4f shim (Claude Code -> DeepSeek V4 Flash)
+Description=dsv4shim shim (Claude Code -> DeepSeek V4 Flash)
 After=network-online.target
 
 [Service]
@@ -232,33 +232,33 @@ RestartSec=2
 WantedBy=default.target
 `);
   spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
-  spawnSync('systemctl', ['--user', 'enable', '--now', 'claude-dsv4f-shim.service'], { stdio: 'ignore' });
+  spawnSync('systemctl', ['--user', 'enable', '--now', 'dsv4shim-shim.service'], { stdio: 'ignore' });
   console.log('systemd --user service installed and started');
 } else {
-  console.log(yel('No systemd — the shim starts on demand when you run `dsv4f run`.'));
+  console.log(yel('No systemd — the shim starts on demand when you run `dsv4shim run`.'));
 }
 
-spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'start'], { stdio: 'inherit' });
+spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'start'], { stdio: 'inherit' });
 
 // ------------------------------------------------------ multi-source import picker
 // Three possible sources, any combination present: Claude Code CLI, Claude Desktop, and
-// opencode. See bin/dsv4f-sources.mjs's header for exactly what each one is and why
+// opencode. See bin/dsv4shim-sources.mjs's header for exactly what each one is and why
 // claude-cli/claude-desktop are handled together (they share ~/.claude/projects — Desktop
 // embeds the real CLI rather than having its own transcript format).
 //
 // Per source, four dispositions, asked INDIVIDUALLY — never assumed, never global:
 //   leave   nothing happens
-//   copy    imported into dsv4f; source keeps its own copy untouched
-//   move    imported into dsv4f, then scrubbed from the source (source stays installed,
+//   copy    imported into dsv4shim; source keeps its own copy untouched
+//   move    imported into dsv4shim, then scrubbed from the source (source stays installed,
 //           minus that history)
 //   remove  copy + scrub, then remove the source itself. For claude-cli this means bundling
-//           the binary privately into dsv4f and deleting Anthropic credentials — never
-//           literally uninstalling it, since dsv4f cannot run without SOME Claude Code
+//           the binary privately into dsv4shim and deleting Anthropic credentials — never
+//           literally uninstalling it, since dsv4shim cannot run without SOME Claude Code
 //           binary. For claude-desktop/opencode it means printing manual uninstall steps —
-//           dsv4f never runs a third-party uninstaller unattended. See dsv4f-scrub.mjs's
+//           dsv4shim never runs a third-party uninstaller unattended. See dsv4shim-scrub.mjs's
 //           header for the full reasoning.
 {
-  const { detectSources } = await import('./dsv4f-sources.mjs');
+  const { detectSources } = await import('./dsv4shim-sources.mjs');
   const sources = detectSources({ home: HOME, env: process.env, platform: process.platform });
   const present = sources.filter(s => s.present);
 
@@ -294,10 +294,10 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'start'], { stdio: 'inheri
         console.log('  revertible any time). If you\'d rather keep a completely separate, isolated DeepSeek');
         console.log('  profile instead (e.g. to keep the real install untouched for switching back to');
         console.log('  Anthropic later), say no here and you\'ll get the normal copy/move options next.');
-        const rerouteAns = await ask('  Route the existing install through dsv4f? [Y/n] ');
+        const rerouteAns = await ask('  Route the existing install through dsv4shim? [Y/n] ');
         if (rerouteAns[0] !== 'n') {
-          const { buildRerouteEnv, buildRerouteExtras, applyCliReroute } = await import('./dsv4f-reroute.mjs');
-          const { newBackupDir } = await import('./dsv4f-scrub.mjs');
+          const { buildRerouteEnv, buildRerouteExtras, applyCliReroute } = await import('./dsv4shim-reroute.mjs');
+          const { newBackupDir } = await import('./dsv4shim-scrub.mjs');
           const cliSettingsPath = path.join(cliSource.paths.profile, 'settings.json');
           const backupDir = newBackupDir(PROFILE_DIR, 'cli-reroute');
           try {
@@ -309,7 +309,7 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'start'], { stdio: 'inheri
             console.log(yel('  settings.json will also be rerouted — they share one config file.'));
             cliRerouted = true;
             // The real install now talks to DeepSeek directly -- importing a copy into the
-            // isolated dsv4f profile too would just be redundant duplication of the same
+            // isolated dsv4shim profile too would just be redundant duplication of the same
             // history, so claude-cli's own disposition is implicitly "leave" from here.
             disposition['claude-cli'] = 'leave';
           } catch (e) {
@@ -349,20 +349,20 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f.mjs'), 'start'], { stdio: 'inheri
       // are NEVER chosen without an interactive human present to confirm them.
       for (const s of present) disposition[s.id] = 'copy';
       console.log(yel('  Non-interactive — copying everything found, nothing removed from any source.'));
-      console.log(yel('  Re-run `dsv4f setup` interactively to choose move/remove instead.'));
+      console.log(yel('  Re-run `dsv4shim setup` interactively to choose move/remove instead.'));
     }
 
-    const { applySourceDispositions } = await import('./dsv4f-setup-sources.mjs');
+    const { applySourceDispositions } = await import('./dsv4shim-setup-sources.mjs');
     await applySourceDispositions({ sources: present, disposition, node, ROOT, PROFILE_DIR, DATA_DIR });
   }
 }
 
 console.log(`\n${bold('Setup complete.')}
 
-  dsv4f run                 launch Claude Code
-  dsv4f run --effort ultracode
-  dsv4f status              shim + stored keys
-  dsv4f cap 10              raise the daily cap
+  dsv4shim run                 launch Claude Code
+  dsv4shim run --effort ultracode
+  dsv4shim status              shim + stored keys
+  dsv4shim cap 10              raise the daily cap
 
-  Optional: dsv4f key deepinfra   enables screenshots (DeepSeek cannot see images)
+  Optional: dsv4shim key deepinfra   enables screenshots (DeepSeek cannot see images)
 `);

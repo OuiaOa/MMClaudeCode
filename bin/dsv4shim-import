@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * dsv4f-import — bring your existing Claude Code state into the claude-dsv4f profile.
+ * dsv4shim-import — bring your existing Claude Code state into the dsv4shim profile.
  *
  * Copies memories, per-project session transcripts, permissions and any agents/skills/commands
- * from ~/.claude into ~/.claude-dsv4f, so `claude-dsv4f` in a project directory sees the same
+ * from ~/.claude into ~/.dsv4shim, so `dsv4shim` in a project directory sees the same
  * history and can --resume it.
  *
  * Transcripts are SANITISED on the way in, and that is the part that makes resume actually work
@@ -26,18 +26,18 @@
  *
  * Never copies .credentials.json — that is an Anthropic OAuth session and is meaningless here.
  *
- * Usage: dsv4f-import [--dry-run] [--force] [--auto] [--quiet] [--source <path>]
+ * Usage: dsv4shim-import [--dry-run] [--force] [--auto] [--quiet] [--source <path>]
  *
  *   --source <path>   import from a directory other than ~/.claude
  *                      (if ~/.claude is missing AND stdin is a TTY, you'll be prompted)
- *   --auto            no interactive picker (implies "all"); used by the claude-dsv4f
+ *   --auto            no interactive picker (implies "all"); used by the dsv4shim
  *                      launcher on every run, not just the first
  *   --quiet           print nothing unless something actually changed (one compact line);
  *                      with neither --auto nor --quiet, prints the full itemised report
  *
  * INCREMENTAL BY DEFAULT: a per-file manifest (.import-state.json, mtime+size) means a repeat
  * run only re-scrubs/copies files that are new or have changed since the last run — the whole
- * point being that this is cheap enough to run on every single `claude-dsv4f` launch, not just
+ * point being that this is cheap enough to run on every single `dsv4shim` launch, not just
  * once. (Earlier versions gated the whole import behind a one-time .imported marker file, so
  * any Claude Code session created after the very first launch was never picked up again —
  * --force still exists to wipe the manifest and reprocess everything from scratch.)
@@ -47,7 +47,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 const HOME = os.homedir();
-const DST = process.env.CLAUDE_DSV4F_PROFILE || path.join(HOME, '.claude-dsv4f');
+const DST = process.env.DSV4SHIM_PROFILE || path.join(HOME, '.dsv4shim');
 const MARKER = path.join(DST, '.imported');            // now just "last synced at", not a gate
 const STATE_FILE = path.join(DST, '.import-state.json'); // per-file mtime+size manifest
 
@@ -312,7 +312,7 @@ function walkTree(from, to, rel = '') {
 // worth printing at all is only known once the whole walk is done, and most runs find
 // nothing new. See the final QUIET/AUTO-aware summary block at the bottom.
 if (!AUTO) {
-  console.log(bold(`\nclaude-dsv4f import${DRY ? ' (dry run — nothing written)' : ''}\n`));
+  console.log(bold(`\ndsv4shim import${DRY ? ' (dry run — nothing written)' : ''}\n`));
   console.log(`  from ${SRC}\n  to   ${DST}\n`);
 }
 
@@ -328,7 +328,7 @@ let selectedProjects = null;   // null = no source dir / no interactive picker; 
 
 if (fs.existsSync(projSrc)) {
   const allProjects = fs.readdirSync(projSrc)
-    .filter(p => !p.includes('claude-dsv4f'));   // never import this profile into itself
+    .filter(p => !p.includes('dsv4shim'));   // never import this profile into itself
 
   if (allProjects.length === 0) {
     console.log(dim('  (no projects found in source)'));
@@ -457,13 +457,13 @@ if (QUIET) {
   // The whole point of --quiet (used by the launcher on every single run): say nothing when
   // there's nothing new, so a normal launch with no upstream activity since the last one
   // doesn't print anything at all. When something DID change, one compact line beats silence
-  // — the user should be able to tell dsv4f is actually keeping up, not just trust it blindly.
+  // — the user should be able to tell dsv4shim is actually keeping up, not just trust it blindly.
   if (hadChanges) {
     const bits = [];
     if (sanitised) bits.push(`${sanitised} session${sanitised === 1 ? '' : 's'}`);
     const otherFiles = copied - sanitised;
     if (otherFiles > 0) bits.push(`${otherFiles} other item${otherFiles === 1 ? '' : 's'}`);
-    console.log(`claude-dsv4f: synced ${bits.join(', ') || `${copied} item(s)`} from ${SRC}`);
+    console.log(`dsv4shim: synced ${bits.join(', ') || `${copied} item(s)`} from ${SRC}`);
   }
 } else {
   console.log(plan.join('\n') || '  (nothing to import)');
@@ -473,7 +473,7 @@ if (QUIET) {
   console.log(`  thinking blocks     : ${thinkingDropped} dropped ${dim('(signatures DeepSeek cannot validate)')}`);
   console.log(`  images/documents    : ${imagesDropped} replaced ${dim('(unsupported upstream)')}`);
   if (skippedUnchanged) console.log(`  unchanged           : ${skippedUnchanged} file(s) already synced (no changes since last run)`);
-  if (skipped) console.log(`  skipped             : ${skipped} dsv4f project dir(s)`);
+  if (skipped) console.log(`  skipped             : ${skipped} dsv4shim project dir(s)`);
   console.log(dim('\n  .credentials.json was NOT copied — it is an Anthropic session, meaningless here.'));
 }
 
@@ -481,7 +481,7 @@ if (!DRY) {
   fs.mkdirSync(DST, { recursive: true });
   fs.writeFileSync(MARKER, new Date().toISOString() + '\n');
   fs.writeFileSync(STATE_FILE, JSON.stringify(newState));
-  if (!AUTO) console.log(`\n${bold('Done.')} cd into any project and run: dsv4f run --resume\n`);
+  if (!AUTO) console.log(`\n${bold('Done.')} cd into any project and run: dsv4shim run --resume\n`);
 } else {
   console.log(`\n${bold('Dry run.')} Re-run without --dry-run to apply.\n`);
 }

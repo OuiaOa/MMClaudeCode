@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * dsv4f-reroute — point an EXISTING, kept-installed Claude Code CLI at the dsv4f shim, by
- * adding the standard dsv4f env block to that install's OWN settings.json.
+ * dsv4shim-reroute — point an EXISTING, kept-installed Claude Code CLI at the dsv4shim shim, by
+ * adding the standard dsv4shim env block to that install's OWN settings.json.
  *
  * This is Axis 3 from the multi-source import design ("keep Claude Code CLI installed, but
  * stop paying Anthropic through it"). The technique is PROVEN — built and verified working
@@ -20,9 +20,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Build the standard dsv4f env block — the SAME keys dsv4f-setup.mjs writes into dsv4f's own
+ * Build the standard dsv4shim env block — the SAME keys dsv4shim-setup.mjs writes into dsv4shim's own
  * isolated profile, applied here to someone else's settings.json instead. Keeping this in
- * one place (rather than copy-pasted between dsv4f-setup.mjs and here) means a future change
+ * one place (rather than copy-pasted between dsv4shim-setup.mjs and here) means a future change
  * to the isolated profile's env doesn't quietly drift out of sync with the reroute path.
  */
 export function buildRerouteEnv({ port, sentinel }) {
@@ -65,15 +65,15 @@ export function buildRerouteEnv({ port, sentinel }) {
  * bigger behavioral call than "which model backend to use", and unlike env vars it isn't
  * reversible-by-inspection if they don't notice. Leave their own permission choice alone.
  *
- * denyListSrc is the dsv4f install's own SHIPPED copy (ROOT/deny-list.sh) — reused directly
+ * denyListSrc is the dsv4shim install's own SHIPPED copy (ROOT/deny-list.sh) — reused directly
  * rather than copying it a second time into yet another location; it's already a stable
- * path dsv4f itself manages, and only makes sense to wire up as a hook on non-Windows (it's
+ * path dsv4shim itself manages, and only makes sense to wire up as a hook on non-Windows (it's
  * a bash script — no POSIX shell guaranteed on Windows, same reasoning as statusline.sh's
- * old platform gap that dsv4f-statusline.mjs replaced).
+ * old platform gap that dsv4shim-statusline.mjs replaced).
  */
 export function buildRerouteExtras({ rootDir, platform = process.platform }) {
   const extras = {
-    statusLine: { type: 'command', command: `node "${path.join(rootDir, 'bin', 'dsv4f-statusline.mjs')}"`, refreshInterval: 10 },
+    statusLine: { type: 'command', command: `node "${path.join(rootDir, 'bin', 'dsv4shim-statusline.mjs')}"`, refreshInterval: 10 },
     effortLevel: 'high',
     skipWebFetchPreflight: true,
   };
@@ -87,7 +87,7 @@ export function buildRerouteExtras({ rootDir, platform = process.platform }) {
  * nothing to back up, if the file didn't exist yet). Merges `env` key-by-key and each extras
  * top-level key individually — never touches anything the target already has a value for
  * (so a user's own deliberate customization always survives a reroute, consistent with how
- * dsv4f-setup.mjs treats its own settings.json), and never overwrites an env var the target
+ * dsv4shim-setup.mjs treats its own settings.json), and never overwrites an env var the target
  * file already set to something else.
  *
  * @param {string} settingsPath
@@ -125,7 +125,7 @@ export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) 
   }
   // hooks.PreToolUse is an array — a plain "add if key missing" check would silently skip
   // adding our entry to an ALREADY-populated array (the user's own hook, or a leftover from
-  // an earlier reroute). Dedup by command string instead, same as dsv4f-setup.mjs's own
+  // an earlier reroute). Dedup by command string instead, same as dsv4shim-setup.mjs's own
   // isolated-profile logic, so re-running reroute never duplicates the hook.
   if (denyListSrc) {
     live.hooks ??= {};

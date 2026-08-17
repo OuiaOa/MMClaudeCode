@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * End-to-end test for the claude-dsv4f shim against a mock DeepSeek Anthropic endpoint.
+ * End-to-end test for the dsv4shim shim against a mock DeepSeek Anthropic endpoint.
  * Verifies the effort translation (especially xhigh->max, which is what makes ultracode
  * work), slot routing, model allowlist, cache hygiene, streaming usage capture and the cap.
  */
@@ -11,7 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4f-test-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-test-'));
 const CONFIG_DIR = path.join(TMP, 'config');
 const DATA_DIR = path.join(TMP, 'data');
 fs.mkdirSync(CONFIG_DIR); fs.mkdirSync(DATA_DIR);
@@ -26,7 +26,7 @@ fs.writeFileSync(path.join(CONFIG_DIR, 'deepinfra-key'), 'di-test-key');
 
 const VISION_PORT = 9912;
 
-// The repo's own shipped default, not the machine's live ~/.config/claude-dsv4f/config.json —
+// The repo's own shipped default, not the machine's live ~/.config/dsv4shim/config.json —
 // the suite must pass on a fresh checkout (a new contributor, CI, a worktree with no install
 // on the box at all), not only on a machine that already has this tool set up.
 const realCfg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'config.default.json'), 'utf8'));
@@ -217,7 +217,7 @@ await new Promise(r => visionMock.listen(VISION_PORT, '127.0.0.1', r));
 
 // ---------------------------------------------------------------------- shim
 const shim = spawn(process.execPath, [path.join(import.meta.dirname, 'shim.mjs')], {
-  env: { ...process.env, DSV4F_CONFIG_DIR: CONFIG_DIR, DSV4F_DATA_DIR: DATA_DIR },
+  env: { ...process.env, DSV4SHIM_CONFIG_DIR: CONFIG_DIR, DSV4SHIM_DATA_DIR: DATA_DIR },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let shimLog = '';
@@ -233,7 +233,7 @@ process.on('unhandledRejection', (e) => { console.error(e); cleanup(); process.e
 async function waitUp() {
   for (let i = 0; i < 50; i++) {
     try {
-      const r = await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4f/health`);
+      const r = await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4shim/health`);
       if (r.ok) return true;
     } catch { /* retry */ }
     await new Promise(r => setTimeout(r, 100));
@@ -264,7 +264,7 @@ const msg = (extra = {}, text = 'hi') => ({
   messages: [{ role: 'user', content: text }], ...extra,
 });
 
-console.log('\n\x1b[1mclaude-dsv4f shim tests\x1b[0m\n');
+console.log('\n\x1b[1mdsv4shim shim tests\x1b[0m\n');
 console.log('\x1b[1meffort translation\x1b[0m');
 
 let r = await send(msg());
@@ -451,7 +451,7 @@ console.log('\n\x1b[1mspend cap\x1b[0m');
 fs.writeFileSync(path.join(CONFIG_DIR, 'cap'), '0.00000001');
 r = await send(msg());
 check('cap refuses with 403 (not 429, which would retry-spin)', r.status === 403, `status=${r.status}`);
-check('cap message tells you how to raise it', /dsv4f-cap/.test(r.text));
+check('cap message tells you how to raise it', /dsv4shim-cap/.test(r.text));
 fs.writeFileSync(path.join(CONFIG_DIR, 'cap'), '5');
 r = await send(msg());
 check('raising the cap restores service', r.status === 200);
@@ -468,7 +468,7 @@ check('no replacement characters introduced', !String(roundTripped).includes('�
 
 console.log('\n\x1b[1munguarded paths\x1b[0m');
 // Only /v1/messages is metered. Any other inference path forwarded verbatim would bill the
-// real key while being invisible to the cap, the ledger and dsv4f-usage.
+// real key while being invisible to the cap, the ledger and dsv4shim-usage.
 for (const p of ['/v1/messages/', '/v1/messages/batches', '/v1/complete']) {
   const rr = await fetch(`http://127.0.0.1:${SHIM_PORT}${p}`, {
     method: 'POST',
@@ -651,7 +651,7 @@ const allRows = fs.readFileSync(path.join(DATA_DIR, 'usage.jsonl'), 'utf8')
 check('every ledger row declares a provider', allRows.every(r => r.provider === 'deepseek' || r.provider === 'deepinfra'),
   `missing on ${allRows.filter(r => !r.provider).length} rows`);
 
-const liveSummary = await (await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4f/usage`, {
+const liveSummary = await (await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4shim/usage`, {
   headers: { authorization: `Bearer ${SENTINEL}` },
 })).json();
 const dsLedger = allRows.filter(r => (r.provider || 'deepseek') === 'deepseek')
@@ -667,9 +667,9 @@ check('the two provider totals do not overlap', diLedger > 0 && liveSummary.toda
 console.log('\n\x1b[1musage endpoint\x1b[0m');
 // The usage summary embeds the DeepSeek account balance, so it must not be readable without
 // the sentinel, and a rebound Host must not reach it either.
-const unauth = await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4f/usage`);
+const unauth = await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4shim/usage`);
 check('usage endpoint requires the sentinel', unauth.status === 401, `status=${unauth.status}`);
-const health = await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4f/health`);
+const health = await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4shim/health`);
 const healthBody = await health.json();
 check('health stays open for the readiness probe', health.status === 200 && healthBody.ok === true);
 check('health leaks no spend, balance or config', !('model' in healthBody) && !('capUsd' in healthBody),
@@ -677,7 +677,7 @@ check('health leaks no spend, balance or config', !('model' in healthBody) && !(
 // fetch() treats Host as a forbidden header and drops it, so this needs a raw request.
 const reboundStatus = await new Promise((resolve) => {
   const rq = http.request({
-    host: '127.0.0.1', port: SHIM_PORT, path: '/_dsv4f/health', method: 'GET',
+    host: '127.0.0.1', port: SHIM_PORT, path: '/_dsv4shim/health', method: 'GET',
     headers: { host: 'evil.example.com' },
   }, (rs) => { rs.resume(); resolve(rs.statusCode); });
   rq.on('error', () => resolve(0));
@@ -685,7 +685,7 @@ const reboundStatus = await new Promise((resolve) => {
 });
 check('foreign Host header rejected (DNS rebinding)', reboundStatus === 403, `status=${reboundStatus}`);
 
-const u = await (await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4f/usage`, {
+const u = await (await fetch(`http://127.0.0.1:${SHIM_PORT}/_dsv4shim/usage`, {
   headers: { authorization: `Bearer ${SENTINEL}` },
 })).json();
 check('reports request count', u.requests > 0);
@@ -1126,7 +1126,7 @@ console.log('\n\x1b[1mtemporal anchor\x1b[0m');
 
 // --- failure rows reach the ledger -----------------------------------------------
 // The ledger previously recorded only successes, which made "100% status 200" a tautology
-// rather than evidence of a healthy upstream and hid every 429/503 from dsv4f-usage.
+// rather than evidence of a healthy upstream and hid every 429/503 from dsv4shim-usage.
 console.log('\n\x1b[1mledger records failures\x1b[0m');
 {
   const readLedger = () => fs.readFileSync(path.join(DATA_DIR, 'usage.jsonl'), 'utf8')

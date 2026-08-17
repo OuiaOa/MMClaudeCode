@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsv4f-sources — detect the tools whose history can be brought into claude-dsv4f, and
+ * dsv4shim-sources — detect the tools whose history can be brought into dsv4shim, and
  * describe what can be done with each.
  *
  * Three possible sources, any combination of which may be present:
@@ -19,7 +19,7 @@
  *                   plus deleted_<uuid> tombstone files for soft-deleted ones. Those sidecars
  *                   are what Desktop's own session list reads — so removing them is how an
  *                   imported session disappears from Desktop without touching the transcript
- *                   that dsv4f now shares with the CLI.
+ *                   that dsv4shim now shares with the CLI.
  *
  *   opencode        Stores everything in a SQLite database (~/.local/share/opencode/
  *                   opencode.db) — project/session/message/part tables. The older on-disk
@@ -34,15 +34,15 @@
  * (Desktop has sidecars; the CLI does not) and the uninstall.
  *
  * Usage:
- *   dsv4f-sources           human-readable report
- *   dsv4f-sources --json    machine-readable, for the installer/setup to consume
+ *   dsv4shim-sources           human-readable report
+ *   dsv4shim-sources --json    machine-readable, for the installer/setup to consume
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { walkFiles } from './dsv4f-lib.mjs';
+import { walkFiles } from './dsv4shim-lib.mjs';
 
 // require() shim so this ESM module can pull in node:sqlite lazily without a top-level
 // import (which would hard-fail the whole module on Node < 22.5, breaking detection of the

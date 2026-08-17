@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsv4f-usage — spend, token burn rate and balance for claude-dsv4f.
+ * dsv4shim-usage — spend, token burn rate and balance for dsv4shim.
  *
  * DeepSeek has no usage/spend API (its entire surface is chat/responses/FIM/models/balance),
  * so the ledger written by the shim is the only per-request record. `--reconcile` cross-checks
@@ -18,8 +18,8 @@ import os from 'node:os';
 import http from 'node:http';
 
 const HOME = os.homedir();
-const CONFIG_DIR = process.env.DSV4F_CONFIG_DIR || path.join(HOME, '.config', 'claude-dsv4f');
-const DATA_DIR = process.env.DSV4F_DATA_DIR || path.join(HOME, '.local', 'share', 'claude-dsv4f');
+const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
+const DATA_DIR = process.env.DSV4SHIM_DATA_DIR || path.join(HOME, '.local', 'share', 'dsv4shim');
 const LEDGER = path.join(DATA_DIR, 'usage.jsonl');
 const BAL_HIST = path.join(DATA_DIR, 'balance-history.jsonl');
 
@@ -49,7 +49,7 @@ const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 if (has('--probe')) {
   const p = path.join(CONFIG_DIR, 'probe-results.json');
   if (!fs.existsSync(p)) {
-    console.log('No probe results. Run: claude-dsv4f-setup --probe');
+    console.log('No probe results. Run: dsv4shim-setup --probe');
     process.exit(1);
   }
   const r = JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -76,7 +76,7 @@ if (has('--reconcile')) {
   if (bal.length < 2) {
     console.log('\nNeed at least two balance samples to reconcile.');
     console.log('The shim samples on start, ~60s after activity settles, and hourly when idle.');
-    console.log(`Currently have ${bal.length}. Use claude-dsv4f for a while, then retry.\n`);
+    console.log(`Currently have ${bal.length}. Use dsv4shim for a while, then retry.\n`);
     process.exit(0);
   }
 
@@ -169,7 +169,7 @@ const cMin = sum(r => r.costUsdMin);
 const cMax = sum(r => r.costUsdMax);
 const exact = rows.length > 0 && rows.every(r => r.exact !== false);
 
-console.log(bold(`\nclaude-dsv4f usage — last ${days} day${days === 1 ? '' : 's'}\n`));
+console.log(bold(`\ndsv4shim usage — last ${days} day${days === 1 ? '' : 's'}\n`));
 
 if (!rows.length) {
   console.log('  No requests recorded yet.\n');
@@ -217,7 +217,7 @@ let sentinel = '';
 try { sentinel = fs.readFileSync(path.join(CONFIG_DIR, 'sentinel'), 'utf8').trim(); } catch { /* shim will 401 */ }
 
 http.get({
-  host: '127.0.0.1', port, path: '/_dsv4f/usage', timeout: 2000,
+  host: '127.0.0.1', port, path: '/_dsv4shim/usage', timeout: 2000,
   headers: { authorization: `Bearer ${sentinel}` },
 }, (res) => {
   let b = '';

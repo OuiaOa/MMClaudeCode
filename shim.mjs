@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * claude-dsv4f shim — Claude Code -> DeepSeek V4 Flash 0731
+ * dsv4shim shim — Claude Code -> DeepSeek V4 Flash 0731
  *
  * Sits between Claude Code and https://api.deepseek.com/anthropic and does the four
  * things environment variables cannot:
@@ -25,8 +25,8 @@ import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 
 const HOME = os.homedir();
-const CONFIG_DIR = process.env.DSV4F_CONFIG_DIR || path.join(HOME, '.config', 'claude-dsv4f');
-const DATA_DIR = process.env.DSV4F_DATA_DIR || path.join(HOME, '.local', 'share', 'claude-dsv4f');
+const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
+const DATA_DIR = process.env.DSV4SHIM_DATA_DIR || path.join(HOME, '.local', 'share', 'dsv4shim');
 
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const KEY_FILE = path.join(CONFIG_DIR, 'key');
@@ -45,7 +45,7 @@ function readJson(file, fallback) {
 
 const cfg = readJson(CONFIG_FILE, null);
 if (!cfg) {
-  console.error(`[dsv4f] FATAL: cannot read ${CONFIG_FILE}`);
+  console.error(`[dsv4shim] FATAL: cannot read ${CONFIG_FILE}`);
   process.exit(1);
 }
 
@@ -53,18 +53,18 @@ let API_KEY = '';
 try {
   API_KEY = fs.readFileSync(KEY_FILE, 'utf8').trim();
 } catch {
-  console.error(`[dsv4f] FATAL: no API key at ${KEY_FILE}. Run: claude-dsv4f-setup`);
+  console.error(`[dsv4shim] FATAL: no API key at ${KEY_FILE}. Run: dsv4shim-setup`);
   process.exit(1);
 }
 if (!API_KEY) {
-  console.error(`[dsv4f] FATAL: ${KEY_FILE} is empty. Run: claude-dsv4f-setup`);
+  console.error(`[dsv4shim] FATAL: ${KEY_FILE} is empty. Run: dsv4shim-setup`);
   process.exit(1);
 }
 
 let SENTINEL = '';
 try { SENTINEL = fs.readFileSync(SENTINEL_FILE, 'utf8').trim(); } catch { /* set below */ }
 if (!SENTINEL) {
-  console.error(`[dsv4f] FATAL: no sentinel at ${SENTINEL_FILE}. Run: claude-dsv4f-setup`);
+  console.error(`[dsv4shim] FATAL: no sentinel at ${SENTINEL_FILE}. Run: dsv4shim-setup`);
   process.exit(1);
 }
 
@@ -81,7 +81,7 @@ const UPSTREAM = new URL(cfg.upstream);
 const UPSTREAM_MOD = UPSTREAM.protocol === 'http:' ? http : https;
 const MODEL = cfg.model;
 
-function log(...a) { console.log(`[dsv4f ${new Date().toISOString()}]`, ...a); }
+function log(...a) { console.log(`[dsv4shim ${new Date().toISOString()}]`, ...a); }
 function vlog(...a) { if (VERBOSE) log(...a); }
 
 // ------------------------------------------------------------------ cap state
@@ -193,7 +193,7 @@ function peakMultiplier(date = new Date()) {
 /**
  * Anthropic semantics: input_tokens EXCLUDES cached reads. If DeepSeek's Anthropic-format
  * response omits the cache fields we cannot know the split, so we record both bounds and
- * enforce the cap on the pessimistic one. `dsv4f-usage --reconcile` later solves for the
+ * enforce the cap on the pessimistic one. `dsv4shim-usage --reconcile` later solves for the
  * true hit ratio from exact balance drawdown.
  */
 function priceUsage(u, date = new Date(), model = MODEL) {
@@ -246,7 +246,7 @@ function appendLedger(row) {
  * necessarily uses both terms constantly — matched on every single subsequent request for the
  * rest of that conversation, silently replacing every real reply with the canned "approved"
  * mock instead. Caught live on this box: one resumed session's history alone contained
- * "classify_result" 11,315 times and "shouldBlock" 5,654 times (from earlier dsv4f debugging
+ * "classify_result" 11,315 times and "shouldBlock" 5,654 times (from earlier dsv4shim debugging
  * sessions), and every one of its ~34,000 requests over the following day was hijacked by
  * this. Checking the CURRENT request's tool definitions specifically — not history text —
  * cannot false-positive this way: old messages don't retroactively define a tool.
@@ -1039,7 +1039,7 @@ async function describeImageUncached(key, mediaType, b64, focus) {
     // the situation (a sustained cap outage) where cost predictability matters most.
     return {
       text: null, cached: false, cost: 0, errCode: 'cap',
-      err: `daily vision cap of $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}); raise with: dsv4f-cap vision <amount>`,
+      err: `daily vision cap of $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}); raise with: dsv4shim-cap vision <amount>`,
     };
   }
 
@@ -1454,7 +1454,7 @@ function apiError(res, status, message, type = 'invalid_request_error') {
  * truncating the turn.
  */
 function emitStreamError(res, message) {
-  const payload = { type: 'error', error: { type: 'api_error', message: `claude-dsv4f: ${message}` } };
+  const payload = { type: 'error', error: { type: 'api_error', message: `dsv4shim: ${message}` } };
   res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
 }
 
@@ -1526,7 +1526,7 @@ function pollBalance() {
         const j = JSON.parse(b);
         j._polledAt = new Date().toISOString();
         fs.writeFileSync(BALANCE_FILE, JSON.stringify(j, null, 2));
-        // Append-only history so `dsv4f-usage --reconcile` can solve for the true cache-hit
+        // Append-only history so `dsv4shim-usage --reconcile` can solve for the true cache-hit
         // ratio from exact balance drawdown when the usage object omits the cache split.
         const info = (j.balance_infos || [])[0];
         if (info) {
@@ -1558,7 +1558,7 @@ async function handleMessages(req, res, rawBody) {
 
   let body;
   try { body = JSON.parse(rawBody); }
-  catch { return apiError(res, 400, 'claude-dsv4f: request body is not valid JSON'); }
+  catch { return apiError(res, 400, 'dsv4shim: request body is not valid JSON'); }
 
   // ---- NEW: Desktop/Cowork tier detection --------------------------------------
   // Must run BEFORE modelMapper() rewrites body.model, since tierOf() matches against the
@@ -1591,7 +1591,7 @@ async function handleMessages(req, res, rawBody) {
   if (resolved.deny) {
     log(`REFUSED model "${body.model}" (matches deny pattern "${resolved.deny}")`);
     return apiError(res, 403,
-      `claude-dsv4f refuses model "${body.model}". Only ${MODEL} is allowed by this profile ` +
+      `dsv4shim refuses model "${body.model}". Only ${MODEL} is allowed by this profile ` +
       `(guard against accidentally billing a more expensive model). Edit denyModelPatterns in ${CONFIG_FILE} to change.`);
   }
   if (resolved.warn) vlog(resolved.warn);
@@ -1602,12 +1602,12 @@ async function handleMessages(req, res, rawBody) {
     log(`CAP HIT: $${spent.toFixed(4)} >= $${cap.toFixed(2)}`);
     // 403 not 429: Claude Code retries 429 with backoff, which would spin.
     return apiError(res, 403,
-      `claude-dsv4f: daily cap $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}, ${todayDay}). ` +
-      `Raise with: dsv4f-cap <amount>`, 'permission_error');
+      `dsv4shim: daily cap $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}, ${todayDay}). ` +
+      `Raise with: dsv4shim-cap <amount>`, 'permission_error');
   }
 
   // null when the session cannot be identified — see ultracodeSessions above.
-  const sessionKey = body?.metadata?.user_id || req.headers['x-dsv4f-session'] || null;
+  const sessionKey = body?.metadata?.user_id || req.headers['x-dsv4shim-session'] || null;
 
   // Swap any image blocks for text descriptions before DeepSeek sees the request. The user's
   // own text is captured first so the vision model knows what the agent is actually looking for.
@@ -1732,7 +1732,7 @@ async function handleMessages(req, res, rawBody) {
           log(`upstream ${status}: ${out.slice(0, 400)}`);
           // Failures are recorded too. Without this the ledger holds successes only, so
           // "100% status 200" is a tautology rather than evidence of a healthy upstream, and
-          // every 429/503 is invisible to `dsv4f-usage` — leaving the shim's own stdout as
+          // every 429/503 is invisible to `dsv4shim-usage` — leaving the shim's own stdout as
           // the sole trace of, say, a rate-limited fan-out. A non-2xx carries no usage block,
           // so this prices from byte sizes; DeepSeek does not bill rejected calls, so that
           // cost is expected to be noise. The row exists to make the failure countable.
@@ -1771,7 +1771,7 @@ async function handleMessages(req, res, rawBody) {
         return;
       }
       log('upstream error:', e.message);
-      if (!res.headersSent) apiError(res, 502, `claude-dsv4f: upstream error: ${e.message}`, 'api_error');
+      if (!res.headersSent) apiError(res, 502, `dsv4shim: upstream error: ${e.message}`, 'api_error');
       else { try { res.end(); } catch {} }
       // Not recorded: a connection-level failure here means no response was ever received
       // (DNS/connect/handshake/idle-timeout before any bytes), which DeepSeek has nothing to
@@ -1865,7 +1865,7 @@ function buildModelsResponse() {
     .map((tier) => ({
       type: 'model',
       id: ids[tier],
-      display_name: `${label[tier]} (claude-dsv4f → DeepSeek V4 Flash)`,
+      display_name: `${label[tier]} (dsv4shim → DeepSeek V4 Flash)`,
       created_at: now,
     }));
   return { data, has_more: false, first_id: data[0]?.id ?? null, last_id: data[data.length - 1]?.id ?? null };
@@ -1891,7 +1891,7 @@ function passthrough(req, res, rawBody, subpath) {
   });
   upReq.on('timeout', () => upReq.destroy(new Error('timeout')));
   upReq.on('error', (e) => {
-    if (!res.headersSent) apiError(res, 502, `claude-dsv4f: ${e.message}`, 'api_error');
+    if (!res.headersSent) apiError(res, 502, `dsv4shim: ${e.message}`, 'api_error');
   });
   upReq.end(outBody);
 }
@@ -1903,19 +1903,19 @@ const server = http.createServer((req, res) => {
   // (rebinding makes the request same-origin, so the absence of CORS headers would not block it).
   const hostHdr = String(req.headers.host || '');
   const hostOk = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(hostHdr);
-  if (!hostOk) return apiError(res, 403, 'claude-dsv4f: unexpected Host header', 'permission_error');
+  if (!hostOk) return apiError(res, 403, 'dsv4shim: unexpected Host header', 'permission_error');
 
   // Liveness only — deliberately carries no spend, balance or config detail, so the readiness
-  // probe in bin/claude-dsv4f can stay unauthenticated.
-  if (url.pathname === '/_dsv4f/health') return sendJson(res, 200, { ok: true });
+  // probe in bin/dsv4shim can stay unauthenticated.
+  if (url.pathname === '/_dsv4shim/health') return sendJson(res, 200, { ok: true });
 
   // Everything else, including the usage summary (which embeds the account balance), needs the
   // sentinel. The local CLIs read it from the same 0600 file the shim does.
   if (!authOk(req)) {
-    return apiError(res, 401, 'claude-dsv4f: bad or missing local sentinel token', 'authentication_error');
+    return apiError(res, 401, 'dsv4shim: bad or missing local sentinel token', 'authentication_error');
   }
 
-  if (url.pathname === '/_dsv4f/usage') return sendJson(res, 200, usageSummary());
+  if (url.pathname === '/_dsv4shim/usage') return sendJson(res, 200, usageSummary());
 
   // Collect Buffers and decode ONCE at the end. `raw += chunk` decodes each chunk in isolation,
   // which corrupts any multi-byte UTF-8 character that happens to straddle a chunk boundary —
@@ -1929,7 +1929,7 @@ const server = http.createServer((req, res) => {
     size += d.length;
     if (size > maxBytes) {
       oversized = true;
-      apiError(res, 413, 'claude-dsv4f: request too large');
+      apiError(res, 413, 'dsv4shim: request too large');
       // req/res share one socket: destroying req immediately can cut the 413 response off
       // mid-write, so the client sees a bare connection reset instead of the JSON error.
       // Waiting for the response to actually finish sending avoids that race.
@@ -1944,7 +1944,7 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/v1/messages') {
       return handleMessages(req, res, raw).catch((e) => {
         log('handleMessages failed:', e.message);
-        if (!res.headersSent) apiError(res, 500, `claude-dsv4f: ${e.message}`, 'api_error');
+        if (!res.headersSent) apiError(res, 500, `dsv4shim: ${e.message}`, 'api_error');
       });
     }
     // Desktop/Cowork's model-discovery probe. GET only, and deliberately intercepted rather
@@ -1957,17 +1957,17 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/v1/messages/count_tokens') {
       if (!COUNT_TOKENS_SUPPORTED) {
         // Claude Code degrades gracefully and estimates locally when this 404s.
-        return apiError(res, 404, 'claude-dsv4f: count_tokens not supported upstream', 'not_found_error');
+        return apiError(res, 404, 'dsv4shim: count_tokens not supported upstream', 'not_found_error');
       }
       return passthrough(req, res, raw, '/v1/messages/count_tokens');
     }
     // Only these paths bypass the guards. Anything else — a trailing slash on /v1/messages, a
     // batch or beta endpoint a future Claude Code build adopts — would otherwise be proxied
-    // verbatim with the real key: billed, unlogged, uncapped and invisible to dsv4f-usage.
+    // verbatim with the real key: billed, unlogged, uncapped and invisible to dsv4shim-usage.
     if (!PASSTHROUGH_ALLOW.has(url.pathname)) {
       log(`REFUSED unguarded path ${req.method} ${url.pathname}`);
       return apiError(res, 404,
-        `claude-dsv4f: ${url.pathname} is not proxied. Only /v1/messages is accounted for; ` +
+        `dsv4shim: ${url.pathname} is not proxied. Only /v1/messages is accounted for; ` +
         `add the path to PASSTHROUGH_ALLOW in shim.mjs if it should be.`, 'not_found_error');
     }
     return passthrough(req, res, raw, url.pathname);
@@ -1975,19 +1975,19 @@ const server = http.createServer((req, res) => {
   req.on('error', () => { try { res.destroy(); } catch {} });
 });
 
-const PORT = parseInt(process.env.DSV4F_PORT || cfg.port || 8788, 10);
+const PORT = parseInt(process.env.DSV4SHIM_PORT || cfg.port || 8788, 10);
 const BIND = cfg.bind || '127.0.0.1';
 
 // Without this, an EADDRINUSE (leftover process still holding the port, or something else
 // bound to it) is an uncaught 'error' event — Node crashes with a raw stack trace instead of
 // a diagnosis, and systemd's RestartSec=2 spins on it forever since the same bind keeps
-// failing. Exit distinctly so the failure is legible in `journalctl --user -u claude-dsv4f-shim`.
+// failing. Exit distinctly so the failure is legible in `journalctl --user -u dsv4shim-shim`.
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
-    console.error(`[dsv4f] FATAL: port ${PORT} is already in use (another shim instance? ` +
+    console.error(`[dsv4shim] FATAL: port ${PORT} is already in use (another shim instance? ` +
       `check: lsof -i tcp:${PORT}). Not retrying — fix the conflict and restart the service.`);
   } else {
-    console.error(`[dsv4f] FATAL: server error: ${e.message}`);
+    console.error(`[dsv4shim] FATAL: server error: ${e.message}`);
   }
   process.exit(1);
 });
@@ -1996,7 +1996,7 @@ server.listen(PORT, BIND, () => {
   log(`listening on http://${BIND}:${PORT} -> ${cfg.upstream}`);
   log(`model=${MODEL} effortField=${EFFORT_FIELD} effortSupported=${EFFORT_SUPPORTED} cap=$${readCap().toFixed(2)}/day`);
   if (!fs.existsSync(PROBE_FILE)) {
-    log('WARN: no probe-results.json — using documented defaults. Run claude-dsv4f-setup --probe to calibrate.');
+    log('WARN: no probe-results.json — using documented defaults. Run dsv4shim-setup --probe to calibrate.');
   }
   // Balance polling costs no tokens (it is an account endpoint, not an inference call), but
   // it is still driven by activity rather than a fixed tick: a sample taken just after a burst

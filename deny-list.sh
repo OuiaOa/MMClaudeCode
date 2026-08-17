@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# claude-dsv4f PreToolUse deny-list hook.
+# dsv4shim PreToolUse deny-list hook.
 # Hard-blocks catastrophic commands in bypassPermissions mode (no other guardrail exists).
 # stdin: hook JSON (tool_input.command is matched as raw text — the JSON layer escapes
 # only quotes/backslashes, which cannot appear in the fragments below).

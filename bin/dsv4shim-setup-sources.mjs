@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * dsv4f-setup-sources — execute the per-source import/scrub/remove choices collected by
- * dsv4f-setup.mjs's picker. Kept in its own module (not inline in dsv4f-setup.mjs) so it can
- * be imported and unit-tested directly — dsv4f-setup.mjs itself runs interactive/side-
+ * dsv4shim-setup-sources — execute the per-source import/scrub/remove choices collected by
+ * dsv4shim-setup.mjs's picker. Kept in its own module (not inline in dsv4shim-setup.mjs) so it can
+ * be imported and unit-tested directly — dsv4shim-setup.mjs itself runs interactive/side-
  * effecting code (key prompts, endpoint probing, systemd installation) at import time, which
  * makes IT unsafe to import from a test.
  *
- * claude-cli and claude-desktop share one import pass (dsv4f-import already walks the whole
- * ~/.claude tree, which both sources point at — see dsv4f-sources.mjs's header) but get
+ * claude-cli and claude-desktop share one import pass (dsv4shim-import already walks the whole
+ * ~/.claude tree, which both sources point at — see dsv4shim-sources.mjs's header) but get
  * INDEPENDENT scrub passes: only claude-cli's disposition may touch the shared transcripts;
  * claude-desktop's own disposition only ever touches its private sidecar files, never the
- * transcripts claude-cli might still want. See dsv4f-scrub.mjs's header for the full
+ * transcripts claude-cli might still want. See dsv4shim-scrub.mjs's header for the full
  * reasoning behind that split and for why "remove" never means running a third-party
  * uninstaller unattended.
  */
@@ -24,15 +24,15 @@ const yel = s => `\x1b[33m${s}\x1b[0m`;
  * @param {object} opts
  * @param {Array}  opts.sources        the `present` subset of detectSources()'s output
  * @param {object} opts.disposition    { [sourceId]: 'leave'|'copy'|'move'|'remove' }
- * @param {string} opts.node           node executable to spawn dsv4f-import with
- * @param {string} opts.ROOT           dsv4f package root (bin/dsv4f-import lives under here)
- * @param {string} opts.PROFILE_DIR    destination dsv4f profile (~/.claude-dsv4f normally)
- * @param {string} opts.DATA_DIR       dsv4f's DATA_DIR (bundled Claude Code binary lands
+ * @param {string} opts.node           node executable to spawn dsv4shim-import with
+ * @param {string} opts.ROOT           dsv4shim package root (bin/dsv4shim-import lives under here)
+ * @param {string} opts.PROFILE_DIR    destination dsv4shim profile (~/.dsv4shim normally)
+ * @param {string} opts.DATA_DIR       dsv4shim's DATA_DIR (bundled Claude Code binary lands
  *                                     under <DATA_DIR>/bin/ — only used for cliDisp==='remove')
- * @param {object} [opts.importEnv]    extra env vars for the dsv4f-import subprocess (tests
- *                                     use this for CLAUDE_DSV4F_PROFILE / --source overrides
+ * @param {object} [opts.importEnv]    extra env vars for the dsv4shim-import subprocess (tests
+ *                                     use this for DSV4SHIM_PROFILE / --source overrides
  *                                     via env rather than argv, to keep this signature simple)
- * @param {string} [opts.importStdio]  stdio mode for the dsv4f-import subprocess (default
+ * @param {string} [opts.importStdio]  stdio mode for the dsv4shim-import subprocess (default
  *                                     'inherit' for real use; tests use 'pipe' to stay quiet)
  * @param {Function} [opts.log]        defaults to console.log — injectable so tests can
  *                                     assert on output without terminal noise
@@ -53,15 +53,15 @@ export async function applySourceDispositions({
   // ---- claude-cli / claude-desktop: one shared import covers both ----
   if (cliDisp !== 'leave' || desktopDisp !== 'leave') {
     log(bold('\nImporting Claude Code / Desktop history...'));
-    const r = spawnSync(node, [path.join(ROOT, 'bin', 'dsv4f-import'), '--all'],
+    const r = spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim-import'), '--all'],
       { stdio: importStdio, env: { ...process.env, ...importEnv } });
-    if (r.status !== 0) errorLog(yel(`Import returned ${r.status}; you can retry with: dsv4f-import --force`));
+    if (r.status !== 0) errorLog(yel(`Import returned ${r.status}; you can retry with: dsv4shim-import --force`));
     summary.cliImportStatus = r.status;
   }
 
   if (['move', 'remove'].includes(cliDisp) && cli) {
     log(bold("\nClearing imported history from Claude Code CLI's ~/.claude..."));
-    const { newBackupDir, scrubClaudeTranscripts, scrubClaudeMemories } = await import('./dsv4f-scrub.mjs');
+    const { newBackupDir, scrubClaudeTranscripts, scrubClaudeMemories } = await import('./dsv4shim-scrub.mjs');
     const backupDir = newBackupDir(PROFILE_DIR, 'claude-cli');
     const t = scrubClaudeTranscripts(cli.paths.transcriptRoot, destProjectsDir, backupDir);
     const m = scrubClaudeMemories(cli.paths.transcriptRoot, destProjectsDir, backupDir);
@@ -72,7 +72,7 @@ export async function applySourceDispositions({
   }
   if (['move', 'remove'].includes(desktopDisp) && desktop) {
     log(bold("\nClearing imported sessions from Claude Desktop's own list..."));
-    const { newBackupDir, scrubDesktopSidecars } = await import('./dsv4f-scrub.mjs');
+    const { newBackupDir, scrubDesktopSidecars } = await import('./dsv4shim-scrub.mjs');
     const backupDir = newBackupDir(PROFILE_DIR, 'claude-desktop');
     const r = scrubDesktopSidecars(desktop.paths.sessionSidecars, backupDir);
     log(`  removed ${r.removed} sidecar/tombstone file(s)`);
@@ -81,7 +81,7 @@ export async function applySourceDispositions({
   }
   if (cliDisp === 'remove' && cli) {
     log(bold('\nClaude Code CLI — bundling privately and dropping Anthropic credentials...'));
-    const { newBackupDir, performCliRemoval } = await import('./dsv4f-scrub.mjs');
+    const { newBackupDir, performCliRemoval } = await import('./dsv4shim-scrub.mjs');
     const backupDir = newBackupDir(PROFILE_DIR, 'claude-cli-credentials');
     const r = performCliRemoval({
       binaryPath: cli.binary, dataDir: DATA_DIR,
@@ -90,21 +90,21 @@ export async function applySourceDispositions({
     });
     if (r.alreadyBundled) log(`  binary already bundled at ${r.bundled}`);
     else if (r.bundled) log(`  bundled Claude Code -> ${r.bundled}`);
-    else log(yel('  no binary was available to bundle — dsv4f will need one on PATH or provisioned separately'));
+    else log(yel('  no binary was available to bundle — dsv4shim will need one on PATH or provisioned separately'));
     if (r.credentialsRemoved) log(`  removed Anthropic credentials (backed up to ${r.backupDir})`);
     else log('  no stored Anthropic credentials to remove');
     summary.cliRemoval = r;
   }
   if (desktopDisp === 'remove' && desktop) {
     log(bold('\nClaude Desktop:'));
-    const { describeAppRemoval } = await import('./dsv4f-scrub.mjs');
+    const { describeAppRemoval } = await import('./dsv4shim-scrub.mjs');
     for (const step of describeAppRemoval('claude-desktop')) log(`  - ${step}`);
   }
 
   // ---- opencode ----
   if (opencodeDisp !== 'leave' && opencode) {
     log(bold('\nImporting opencode history...'));
-    const conv = await import('./dsv4f-opencode-convert.mjs');
+    const conv = await import('./dsv4shim-opencode-convert.mjs');
     let db;
     try { db = conv.openDb(opencode.paths.db); }
     catch (e) { errorLog(yel(`  could not open opencode.db: ${e.message}`)); db = null; }
@@ -128,7 +128,7 @@ export async function applySourceDispositions({
 
     if (['move', 'remove'].includes(opencodeDisp) && importedOpencodeIds.length) {
       log(bold('\nClearing imported sessions from opencode...'));
-      const { newBackupDir, scrubOpencodeSessions } = await import('./dsv4f-scrub.mjs');
+      const { newBackupDir, scrubOpencodeSessions } = await import('./dsv4shim-scrub.mjs');
       const backupDir = newBackupDir(PROFILE_DIR, 'opencode');
       try {
         const r = scrubOpencodeSessions(opencode.paths.db, importedOpencodeIds, backupDir);
@@ -142,7 +142,7 @@ export async function applySourceDispositions({
     }
     if (opencodeDisp === 'remove') {
       log(bold('\nopencode:'));
-      const { describeAppRemoval } = await import('./dsv4f-scrub.mjs');
+      const { describeAppRemoval } = await import('./dsv4shim-scrub.mjs');
       for (const step of describeAppRemoval('opencode')) log(`  - ${step}`);
     }
   }

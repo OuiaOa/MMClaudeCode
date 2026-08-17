@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * claude-dsv4f Phase 0 probe.
+ * dsv4shim Phase 0 probe.
  *
  * The official DeepSeek docs contradict each other in two places that matter, and are silent
  * on a third:
@@ -19,12 +19,12 @@ import os from 'node:os';
 import https from 'node:https';
 
 const HOME = os.homedir();
-const CONFIG_DIR = process.env.DSV4F_CONFIG_DIR || path.join(HOME, '.config', 'claude-dsv4f');
+const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
 const KEY_FILE = path.join(CONFIG_DIR, 'key');
 const OUT_FILE = path.join(CONFIG_DIR, 'probe-results.json');
 
 const KEY = fs.readFileSync(KEY_FILE, 'utf8').trim();
-if (!KEY) { console.error('No API key found. Run claude-dsv4f-setup first.'); process.exit(1); }
+if (!KEY) { console.error('No API key found. Run dsv4shim-setup first.'); process.exit(1); }
 
 const ANTHROPIC = 'https://api.deepseek.com/anthropic/v1';
 const MODEL = 'deepseek-v4-flash';
@@ -79,7 +79,7 @@ function note(name, ok, detail) {
 const filler = 'The quick brown fox jumps over the lazy dog. '.repeat(220); // ~2k tokens
 
 (async () => {
-  console.log('\nclaude-dsv4f probe — measuring actual endpoint behaviour\n');
+  console.log('\ndsv4shim probe — measuring actual endpoint behaviour\n');
 
   // 1. model list -------------------------------------------------------------
   const models = await req('https://api.deepseek.com/models', { method: 'GET' });
@@ -185,7 +185,7 @@ const filler = 'The quick brown fox jumps over the lazy dog. '.repeat(220); // ~
   note('prefix cache', movedCache ? true : null, {
     summary: hasCache
       ? `first=${JSON.stringify(c1.json?.usage)} second=${JSON.stringify(c2.json?.usage)}`
-      : 'usage exposes no cache fields — hit ratio must be derived via dsv4f-usage --reconcile',
+      : 'usage exposes no cache fields — hit ratio must be derived via dsv4shim-usage --reconcile',
   });
 
   // 11. effort ladder — measure every level, including the undocumented `ultra`. ----
@@ -267,7 +267,7 @@ const filler = 'The quick brown fox jumps over the lazy dog. '.repeat(220); // ~
   console.log(`\nWrote ${OUT_FILE}\n`);
   console.log('Shim will use:');
   console.log(`  effort field   : ${results.effortField}${results.effortSupported ? '' : '  (NOT SUPPORTED — falling back to thinking on/off only)'}`);
-  console.log(`  cost accounting: ${results.usageHasCacheFields ? 'EXACT (cache split reported)' : 'BOUNDED (use dsv4f-usage --reconcile to calibrate)'}`);
+  console.log(`  cost accounting: ${results.usageHasCacheFields ? 'EXACT (cache split reported)' : 'BOUNDED (use dsv4shim-usage --reconcile to calibrate)'}`);
   console.log(`  xhigh rewrite  : ${results.xhighAccepted ? 'still applied (xhigh is not a DeepSeek level)' : 'REQUIRED — ultracode would 400 without it'}`);
   console.log(`  count_tokens   : ${results.countTokensSupported ? 'proxied' : 'returns 404, Claude Code estimates locally'}\n`);
 })();

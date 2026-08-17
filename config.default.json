@@ -1,5 +1,5 @@
 {
-  "_comment": "claude-dsv4f shim configuration. Rates are USD per 1,000,000 tokens.",
+  "_comment": "dsv4shim shim configuration. Rates are USD per 1,000,000 tokens.",
   "port": 8788,
   "bind": "127.0.0.1",
   "upstream": "https://api.deepseek.com/anthropic",
@@ -124,7 +124,7 @@
   },
   "cap": {
     "dailyUsd": 5,
-    "_comment": "Rolling UTC day. Enforced on the conservative cost estimate. Raise with: dsv4f-cap N"
+    "_comment": "Rolling UTC day. Enforced on the conservative cost estimate. Raise with: dsv4shim-cap N"
   },
   "balance": {
     "_comment": "GET /user/balance is an account endpoint: no tokens, no inference cost. Polling is activity-driven anyway — a sample taken once work quiesces brackets that work cleanly, which is what --reconcile needs.",

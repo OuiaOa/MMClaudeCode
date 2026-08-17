@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * dsv4f — portable CLI. One Node entry point so Windows and Linux share the same code; the
+ * dsv4shim — portable CLI. One Node entry point so Windows and Linux share the same code; the
  * bash scripts remain as thin Linux conveniences but every command here works on both.
  *
- *   dsv4f setup            first-time setup: key prompt, probe, profile, autostart
- *   dsv4f key <provider>   store/replace an API key (deepseek | deepinfra | openrouter)
- *   dsv4f start|stop|status  manage the shim process
- *   dsv4f [run] [args...]  launch Claude Code against the profile (imports on first run).
- *                          `run` is implicit -- bare `dsv4f`, or any args that aren't a known
+ *   dsv4shim setup            first-time setup: key prompt, probe, profile, autostart
+ *   dsv4shim key <provider>   store/replace an API key (deepseek | deepinfra | openrouter)
+ *   dsv4shim start|stop|status  manage the shim process
+ *   dsv4shim [run] [args...]  launch Claude Code against the profile (imports on first run).
+ *                          `run` is implicit -- bare `dsv4shim`, or any args that aren't a known
  *                          subcommand (flags, a prompt), launch it the same way.
- *   dsv4f cap [amount]     show/set the DeepSeek daily cap
- *   dsv4f cap vision [amt] show/set the vision daily cap
+ *   dsv4shim cap [amount]     show/set the DeepSeek daily cap
+ *   dsv4shim cap vision [amt] show/set the vision daily cap
  *
  * Platform differences are confined to: where the shim's PID/log live, and how it is started
  * in the background (systemd on Linux when available, a detached process otherwise).
@@ -20,14 +20,14 @@ import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
-import { resolveClaude } from './dsv4f-lib.mjs';
+import { resolveClaude } from './dsv4shim-lib.mjs';
 
 const HOME = os.homedir();
 const WIN = process.platform === 'win32';
 const ROOT = path.resolve(import.meta.dirname, '..');
-const CONFIG_DIR = process.env.DSV4F_CONFIG_DIR || path.join(HOME, '.config', 'claude-dsv4f');
-const DATA_DIR = process.env.DSV4F_DATA_DIR || path.join(HOME, '.local', 'share', 'claude-dsv4f');
-const PROFILE_DIR = path.join(HOME, '.claude-dsv4f');
+const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
+const DATA_DIR = process.env.DSV4SHIM_DATA_DIR || path.join(HOME, '.local', 'share', 'dsv4shim');
+const PROFILE_DIR = path.join(HOME, '.dsv4shim');
 const PID_FILE = path.join(DATA_DIR, 'shim.pid');
 const LOG_FILE = path.join(DATA_DIR, 'shim.log');
 
@@ -39,7 +39,7 @@ const die = m => { console.error(red(m)); process.exit(1); };
 
 const readJson = (f, d = null) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
 const cfg = () => readJson(path.join(CONFIG_DIR, 'config.json'), {});
-const port = () => process.env.DSV4F_PORT || cfg().port || 8788;
+const port = () => process.env.DSV4SHIM_PORT || cfg().port || 8788;
 
 const PROVIDERS = {
   deepseek:   { file: 'key',            label: 'DeepSeek',   verify: 'https://api.deepseek.com/user/balance' },
@@ -99,12 +99,12 @@ function shimRunning() {
 
 function systemdAvailable() {
   if (WIN) return false;
-  return spawnSync('systemctl', ['--user', 'is-enabled', 'claude-dsv4f-shim.service'], { stdio: 'ignore' }).status === 0;
+  return spawnSync('systemctl', ['--user', 'is-enabled', 'dsv4shim-shim.service'], { stdio: 'ignore' }).status === 0;
 }
 
 async function health(ms = 1500) {
   try {
-    const r = await fetch(`http://127.0.0.1:${port()}/_dsv4f/health`, { signal: AbortSignal.timeout(ms) });
+    const r = await fetch(`http://127.0.0.1:${port()}/_dsv4shim/health`, { signal: AbortSignal.timeout(ms) });
     return r.ok;
   } catch { return false; }
 }
@@ -112,7 +112,7 @@ async function health(ms = 1500) {
 async function cmdStart({ quiet = false } = {}) {
   if (await health()) { if (!quiet) console.log('shim already running'); return true; }
   if (systemdAvailable()) {
-    spawnSync('systemctl', ['--user', 'start', 'claude-dsv4f-shim.service'], { stdio: 'ignore' });
+    spawnSync('systemctl', ['--user', 'start', 'dsv4shim-shim.service'], { stdio: 'ignore' });
   } else {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const out = fs.openSync(LOG_FILE, 'a');
@@ -130,7 +130,7 @@ async function cmdStart({ quiet = false } = {}) {
 }
 
 function cmdStop() {
-  if (systemdAvailable()) { spawnSync('systemctl', ['--user', 'stop', 'claude-dsv4f-shim.service'], { stdio: 'inherit' }); return; }
+  if (systemdAvailable()) { spawnSync('systemctl', ['--user', 'stop', 'dsv4shim-shim.service'], { stdio: 'inherit' }); return; }
   const pid = shimRunning();
   if (!pid) { console.log('shim not running'); return; }
   try { process.kill(pid, WIN ? undefined : 'SIGTERM'); console.log(`stopped (pid ${pid})`); } catch (e) { console.error(e.message); }
@@ -154,37 +154,37 @@ async function cmdStatus() {
  * (fast — 15s is generous, and covers the one-time initial clone if the update cache doesn't
  * exist yet) with no local mutation; the full update (reset + copy + test suite + restart)
  * only runs when one is actually available, with more generous headroom since it only pays
- * that cost on a real update, not every launch. Both timeouts fail SAFE: dsv4f-update.mjs
+ * that cost on a real update, not every launch. Both timeouts fail SAFE: dsv4shim-update.mjs
  * itself already treats "offline" as "keep the installed version" (exit 0, not an error), and
  * a killed/timed-out check here is treated identically — this must never block using the tool.
  */
 function autoUpdateCheck() {
-  const updater = path.join(DATA_DIR, 'bin', 'dsv4f-update.mjs');
+  const updater = path.join(DATA_DIR, 'bin', 'dsv4shim-update.mjs');
   if (!fs.existsSync(updater)) return;   // portable/tarball install predating the updater
   const check = spawnSync(process.execPath, [updater, '--check'], { stdio: 'ignore', timeout: 15000 });
   if (check.status === 10) {
-    console.error('dsv4f: update available — applying...');
+    console.error('dsv4shim: update available — applying...');
     const apply = spawnSync(process.execPath, [updater], { stdio: 'inherit', timeout: 120000 });
-    if (apply.status !== 0) console.error('dsv4f: auto-update failed; continuing with the current version');
+    if (apply.status !== 0) console.error('dsv4shim: auto-update failed; continuing with the current version');
   }
 }
 
 // ------------------------------------------------------------------------ run
 
 async function cmdRun(rest) {
-  if (!fs.existsSync(path.join(CONFIG_DIR, 'key'))) die("No DeepSeek key stored. Run: dsv4f setup");
-  if (!fs.existsSync(path.join(PROFILE_DIR, 'settings.json'))) die('Profile missing. Run: dsv4f setup');
+  if (!fs.existsSync(path.join(CONFIG_DIR, 'key'))) die("No DeepSeek key stored. Run: dsv4shim setup");
+  if (!fs.existsSync(path.join(PROFILE_DIR, 'settings.json'))) die('Profile missing. Run: dsv4shim setup');
 
   autoUpdateCheck();
   if (!await cmdStart({ quiet: true })) process.exit(1);
 
   // Pull across memories, transcripts and permissions (scrubbed so they resume). --source
-  // <path> propagates into the importer (handled below as a dsv4f flag, then stripped before
+  // <path> propagates into the importer (handled below as a dsv4shim flag, then stripped before
   // we hand the rest to claude).
   //
   // This used to be gated behind a one-time .imported marker — ran exactly once, ever, so any
-  // Claude Code session created after the very first `dsv4f run` was never picked up again.
-  // dsv4f-import is incremental by default now (a per-file manifest skips anything unchanged),
+  // Claude Code session created after the very first `dsv4shim run` was never picked up again.
+  // dsv4shim-import is incremental by default now (a per-file manifest skips anything unchanged),
   // so it's cheap enough to run --auto on every launch instead; --quiet keeps a normal launch
   // silent when nothing changed. A failed import no longer aborts the whole run — you can
   // still use the tool with whatever was imported last time.
@@ -192,18 +192,18 @@ async function cmdRun(rest) {
   const srcDefault = path.join(HOME, '.claude', 'projects');
   if (fs.existsSync(srcDefault) || sourceArg.length > 0) {
     const r = spawnSync(process.execPath,
-      [path.join(ROOT, 'bin', 'dsv4f-import'), '--auto', '--quiet', ...sourceArg],
+      [path.join(ROOT, 'bin', 'dsv4shim-import'), '--auto', '--quiet', ...sourceArg],
       { stdio: 'inherit' });
-    if (r.status !== 0) console.error('dsv4f: import failed; continuing without it');
+    if (r.status !== 0) console.error('dsv4shim: import failed; continuing without it');
   }
 
   // Resolve the Claude Code binary. On Windows this honours PATHEXT (so a `claude.exe`
   // installed outside npm works), and falls back to common install locations if PATH
-  // is unset. See bin/dsv4f-lib.mjs for the resolver.
+  // is unset. See bin/dsv4shim-lib.mjs for the resolver.
   let claude;
   try { claude = resolveClaude(); }
   catch (e) { die(e.message); }
-  // Filter --source out of the args we hand to claude (it's a dsv4f flag, not a claude one).
+  // Filter --source out of the args we hand to claude (it's a dsv4shim flag, not a claude one).
   const claudeArgs = stripSource(rest);
 
   // Build the child env. Start from the parent env, then explicitly UNSET the two
@@ -226,7 +226,7 @@ async function cmdRun(rest) {
   childEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
 
   // CONFIRMED LIVE BUG, fixed 2026-08-13: resolveClaude() deliberately returns the bare
-  // string 'claude' on Windows (see dsv4f-lib.mjs) so cmd.exe's PATHEXT resolves it to
+  // string 'claude' on Windows (see dsv4shim-lib.mjs) so cmd.exe's PATHEXT resolves it to
   // claude.cmd/.exe -- but that resolution is a SHELL feature. Without a shell here, Node
   // calls CreateProcess directly (bypassing cmd.exe entirely), so a bare 'claude' with no
   // bundled binary present threw `spawn claude ENOENT` on every Windows machine using a
@@ -290,7 +290,7 @@ function capCmd(rest) {
 
 function help(topic) {
   const H = {
-    setup: `${bold('dsv4f setup')} [--rekey] [--no-vision] [--reprobe]
+    setup: `${bold('dsv4shim setup')} [--rekey] [--no-vision] [--reprobe]
 
 First-time setup. Prompts for your DeepSeek API key (hidden — never echoed, never in argv or
 shell history), offers an optional DeepInfra key for screenshots, probes the endpoint to
@@ -308,7 +308,7 @@ by default instead of re-measuring something that hasn't changed.
 
 Safe to re-run: an existing config.json is never overwritten.`,
 
-    key: `${bold('dsv4f key <provider>')}
+    key: `${bold('dsv4shim key <provider>')}
 
 Store or replace an API key. Input is hidden and the key is verified against the provider
 immediately, so a mangled paste fails now rather than at first use.
@@ -318,23 +318,23 @@ immediately, so a mangled paste fails now rather than at first use.
                transcribed to text first. Without it, images degrade to a clear note.
   openrouter   optional — alternative vision provider
 
-Keys are written 0600 into ~/.config/claude-dsv4f/ and never enter Claude Code's environment;
+Keys are written 0600 into ~/.config/dsv4shim/ and never enter Claude Code's environment;
 Claude Code authenticates to the local shim with a separate generated sentinel.`,
 
-    run: `${bold('dsv4f run')} [claude arguments...]  (also just ${bold('dsv4f')} -- 'run' is the default)
+    run: `${bold('dsv4shim run')} [claude arguments...]  (also just ${bold('dsv4shim')} -- 'run' is the default)
 
 Launch Claude Code against the DeepSeek profile. Everything after 'run' is passed through:
 
-  dsv4f                               normal session -- same as 'dsv4f run'
-  dsv4f run --effort ultracode        xhigh effort + workflow orchestration
-  dsv4f run --resume                  resume this directory's most recent session
-  dsv4f run -p "explain this repo"    one-shot
+  dsv4shim                               normal session -- same as 'dsv4shim run'
+  dsv4shim run --effort ultracode        xhigh effort + workflow orchestration
+  dsv4shim run --resume                  resume this directory's most recent session
+  dsv4shim run -p "explain this repo"    one-shot
 
 Imported and prior sessions show up the normal Claude Code way -- the in-session switcher
 (left arrow) and --resume both read the same history; nothing special is needed to reach them.
 
 Starts the shim if it is not already up. On first run, imports your existing memories,
-transcripts and permissions from ~/.claude (see dsv4f-import).
+transcripts and permissions from ~/.claude (see dsv4shim-import).
 
 Effort is chosen per task: background calls run with thinking off, routine turns at high,
 detected-hard turns at ultra, and 'ultrathink' or ultracode at max. A level you set
@@ -343,52 +343,52 @@ explicitly with /effort is never overridden.
 Screenshots: say what you need from the image, or write 'VISION: <what to look for>', and the
 transcription is directed accordingly.`,
 
-    cap: `${bold('dsv4f cap')} [amount] | ${bold('dsv4f cap vision')} [amount]
+    cap: `${bold('dsv4shim cap')} [amount] | ${bold('dsv4shim cap vision')} [amount]
 
 Daily spend caps, enforced per provider on a rolling UTC day. With no amount, shows the
 current cap.
 
-  dsv4f cap              show the DeepSeek cap
-  dsv4f cap 10           set it to $10/day
-  dsv4f cap vision 3     set the vision cap to $3/day
+  dsv4shim cap              show the DeepSeek cap
+  dsv4shim cap 10           set it to $10/day
+  dsv4shim cap vision 3     set the vision cap to $3/day
 
 At the cap the shim refuses new requests with a clear error rather than a retryable status.
 Cached image descriptions keep working past the vision cap, since replaying them costs nothing.
 
 Note: 0 means DISABLED (unlimited), not a $0 limit. For a hard stop use 0.01.`,
 
-    status: `${bold('dsv4f status')}
+    status: `${bold('dsv4shim status')}
 
 Shows whether the shim is running, how it is started (systemd where available, otherwise on
-demand from 'dsv4f run'), and which provider keys are stored. Never prints key material.`,
+demand from 'dsv4shim run'), and which provider keys are stored. Never prints key material.`,
   };
   if (topic && H[topic]) { console.log('\n' + H[topic] + '\n'); return; }
   console.log(`
-${bold('dsv4f')} — Claude Code driven by DeepSeek V4 Flash 0731
+${bold('dsv4shim')} — Claude Code driven by DeepSeek V4 Flash 0731
 
 ${bold('SETUP')}
-  dsv4f setup                  first-time setup: key, probe, profile, autostart
-  dsv4f key <provider>         store a key (${Object.keys(PROVIDERS).join(', ')})
+  dsv4shim setup                  first-time setup: key, probe, profile, autostart
+  dsv4shim key <provider>         store a key (${Object.keys(PROVIDERS).join(', ')})
 
 ${bold('USE')}
-  dsv4f run [claude args]      launch Claude Code against the profile
-  dsv4f run --effort ultracode full fan-out
-  dsv4f run --resume           resume this directory's last session
+  dsv4shim run [claude args]      launch Claude Code against the profile
+  dsv4shim run --effort ultracode full fan-out
+  dsv4shim run --resume           resume this directory's last session
 
 ${bold('SPEND')}
-  dsv4f cap [amount]           DeepSeek daily cap        (default $5)
-  dsv4f cap vision [amount]    vision daily cap          (default $1.50)
-  dsv4f-usage                  spend, burn rate, balance
-  dsv4f-usage --reconcile      cross-check the ledger against balance drawdown
+  dsv4shim cap [amount]           DeepSeek daily cap        (default $5)
+  dsv4shim cap vision [amount]    vision daily cap          (default $1.50)
+  dsv4shim-usage                  spend, burn rate, balance
+  dsv4shim-usage --reconcile      cross-check the ledger against balance drawdown
 
 ${bold('SERVICE')}
-  dsv4f start | stop | status  manage the local shim
-  dsv4f-import [--force]       re-import memories/transcripts from ~/.claude
+  dsv4shim start | stop | status  manage the local shim
+  dsv4shim-import [--force]       re-import memories/transcripts from ~/.claude
 
 ${bold('HELP')}
-  dsv4f help <command>         detail on setup, key, run, cap, status
+  dsv4shim help <command>         detail on setup, key, run, cap, status
 
-Your normal 'claude' is untouched: this uses a separate profile at ~/.claude-dsv4f and never
+Your normal 'claude' is untouched: this uses a separate profile at ~/.dsv4shim and never
 reads your Anthropic credentials.
 `);
 }
@@ -396,10 +396,10 @@ reads your Anthropic credentials.
 const KNOWN_COMMANDS = ['key', 'start', 'stop', 'status', 'run', 'cap', 'import', 'setup', 'help'];
 const HELP_FLAGS = ['help', '--help', '-h', '-help'];
 const [rawCmd, ...rawRest] = process.argv.slice(2);
-// Bare `dsv4f` (no subcommand), or any first token that isn't one of dsv4f's OWN literal
+// Bare `dsv4shim` (no subcommand), or any first token that isn't one of dsv4shim's OWN literal
 // subcommand words, means "launch Claude Code" -- the whole point of this tool day-to-day.
-// That includes a genuine typo of a subcommand ('dsv4f ruun') -- it gets forwarded to claude
-// as an argument and claude reports the unrecognised-argument error itself, rather than dsv4f
+// That includes a genuine typo of a subcommand ('dsv4shim ruun') -- it gets forwarded to claude
+// as an argument and claude reports the unrecognised-argument error itself, rather than dsv4shim
 // needing its own duplicate notion of what a "valid" trailing argument looks like.
 const looksLikeRunArgs = !HELP_FLAGS.includes(rawCmd) &&
   (rawCmd === undefined || rawCmd.startsWith('-') || !KNOWN_COMMANDS.includes(rawCmd));
@@ -412,22 +412,22 @@ switch (cmd) {
   case 'run':    await cmdRun(rest); break;
   case 'cap':    capCmd(rest); break;
   case 'import': {
-    const r = spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4f-import'), ...rest], { stdio: 'inherit' });
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4shim-import'), ...rest], { stdio: 'inherit' });
     process.exit(r.status ?? 0);
     break;
   }
   case 'setup':
     // CONFIRMED LIVE BUG, fixed 2026-08-13: only cmdRun() called autoUpdateCheck(), so
-    // `dsv4f setup` (no prior `dsv4f run` on this machine — the exact shape of a fresh
+    // `dsv4shim setup` (no prior `dsv4shim run` on this machine — the exact shape of a fresh
     // install) could run whatever code happened to be on disk at that moment, missing a
     // fix that landed on GitHub in between. Confirmed on Work-PC: a reroute ran against
-    // stale bin/dsv4f-setup.mjs, silently missing the statusLine/effortLevel/deny-list
+    // stale bin/dsv4shim-setup.mjs, silently missing the statusLine/effortLevel/deny-list
     // extras a slightly newer commit had already added (env alone still worked, since
     // that part of the code was unchanged) -- required a manual re-apply to fix. Setup
-    // is exactly the command a fresh install runs before ever calling `dsv4f run` once,
+    // is exactly the command a fresh install runs before ever calling `dsv4shim run` once,
     // so it needs its own update check, not a reliance on run's.
     autoUpdateCheck();
-    spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4f-setup.mjs'), ...rest], { stdio: 'inherit' });
+    spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4shim-setup.mjs'), ...rest], { stdio: 'inherit' });
     break;
   case 'help': case '--help': case '-h': case '-help':
     help(rest[0]); break;

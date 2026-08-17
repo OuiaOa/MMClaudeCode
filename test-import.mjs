@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Tests for bin/dsv4f-import — the recursive walk, the --source flag, and the
+ * Tests for bin/dsv4shim-import — the recursive walk, the --source flag, and the
  * no-source-no-TTY hard-exit.
  *
  * The current implementation only walks the top level of each project subdir, so
@@ -13,10 +13,10 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(import.meta.dirname);
-const IMPORT = path.join(ROOT, 'bin', 'dsv4f-import');
+const IMPORT = path.join(ROOT, 'bin', 'dsv4shim-import');
 
 // Scratch root for the whole run — cleaned on exit.
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4f-import-test-'));
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-import-test-'));
 process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
 
 let pass = 0, fail = 0;
@@ -65,7 +65,7 @@ function buildFixture() {
   fs.writeFileSync(path.join(proj, 'memory', 'MEMORY.md'), '# Memory Index\n\n- [Test note](test.md)\n');
   fs.writeFileSync(path.join(proj, 'memory', 'test.md'), 'test note content');
 
-  // also a project without the dsv4f skip — just to make sure the loop handles >1
+  // also a project without the dsv4shim skip — just to make sure the loop handles >1
   const proj2 = path.join(claude, 'projects', 'C--Users-other');
   fs.mkdirSync(proj2, { recursive: true });
   fs.writeFileSync(path.join(proj2, 'session-B.jsonl'), '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"x"}]},"sessionId":"sB"}\n');
@@ -78,14 +78,14 @@ function buildFixture() {
   return { home, src: claude };
 }
 
-console.log('\n\x1b[1mclaude-dsv4f import tests\x1b[0m\n');
+console.log('\n\x1b[1mdsv4shim import tests\x1b[0m\n');
 console.log('\x1b[1mrecursive walk\x1b[0m');
 
 // --- test 1: recursive walk picks up subagent jsonl, meta, blobs, memory
 {
   const { src } = buildFixture();
   const dst = path.join(SCRATCH, 'dst-recursive');
-  const r = runImport(['--source', src, '--force'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  const r = runImport(['--source', src, '--force'], { env: { DSV4SHIM_PROFILE: dst } });
 
   check('import exits 0', r.status === 0, `stderr: ${r.stderr}`);
 
@@ -128,7 +128,7 @@ console.log('\n\x1b[1m--source flag\x1b[0m');
   const { src, home } = buildFixture();
   const dst = path.join(SCRATCH, 'dst-source-flag');
   // HOME is set to a dir with NO .claude; --source overrides; no stdin (stdio:'ignore')
-  const r = runImport(['--source', src, '--force'], { env: { HOME: home, USERPROFILE: home, CLAUDE_DSV4F_PROFILE: dst } });
+  const r = runImport(['--source', src, '--force'], { env: { HOME: home, USERPROFILE: home, DSV4SHIM_PROFILE: dst } });
   check('import with --source succeeds when ~/.claude absent',
     r.status === 0, `stderr: ${r.stderr}`);
 }
@@ -139,7 +139,7 @@ console.log('\n\x1b[1msource missing + no TTY\x1b[0m');
   const bareHome = path.join(SCRATCH, 'home-empty');
   fs.mkdirSync(bareHome, { recursive: true });
   const dst = path.join(SCRATCH, 'dst-missing');
-  const r = runImport(['--force'], { env: { HOME: bareHome, USERPROFILE: bareHome, CLAUDE_DSV4F_PROFILE: dst } });
+  const r = runImport(['--force'], { env: { HOME: bareHome, USERPROFILE: bareHome, DSV4SHIM_PROFILE: dst } });
   check('non-zero exit when source missing and no --source', r.status !== 0, `exit=${r.status}`);
   const msg = (r.stderr || '') + (r.stdout || '');
   check('error message mentions --source flag',
@@ -157,7 +157,7 @@ console.log('\n\x1b[1mscrub still strips thinking blocks\x1b[0m');
     '{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"deep thoughts","signature":"abc"},{"type":"text","text":"visible answer"}]}}\n');
 
   const dst = path.join(SCRATCH, 'dst-scrub');
-  const r = runImport(['--source', path.join(home, '.claude'), '--force'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  const r = runImport(['--source', path.join(home, '.claude'), '--force'], { env: { DSV4SHIM_PROFILE: dst } });
   check('scrub import exits 0', r.status === 0, r.stderr);
 
   const dstFile = path.join(dst, 'projects', 'C--Users-scrub', 's1.jsonl');
@@ -177,14 +177,14 @@ console.log('\n\x1b[1m--all / --none flags (non-TTY)\x1b[0m');
 {
   const { src } = buildFixture();
   const dstAll = path.join(SCRATCH, 'dst-flag-all');
-  const r1 = runImport(['--source', src, '--force', '--all'], { env: { CLAUDE_DSV4F_PROFILE: dstAll } });
+  const r1 = runImport(['--source', src, '--force', '--all'], { env: { DSV4SHIM_PROFILE: dstAll } });
   check('--all exits 0', r1.status === 0, r1.stderr);
   check('--all: both projects present',
     fs.existsSync(path.join(dstAll, 'projects', 'C--Users-test', 'session-A.jsonl')) &&
     fs.existsSync(path.join(dstAll, 'projects', 'C--Users-other', 'session-B.jsonl')));
 
   const dstNone = path.join(SCRATCH, 'dst-flag-none');
-  const r2 = runImport(['--source', src, '--force', '--none'], { env: { CLAUDE_DSV4F_PROFILE: dstNone } });
+  const r2 = runImport(['--source', src, '--force', '--none'], { env: { DSV4SHIM_PROFILE: dstNone } });
   check('--none exits 0', r2.status === 0, r2.stderr);
   const noneProjects = fs.existsSync(path.join(dstNone, 'projects'))
     ? fs.readdirSync(path.join(dstNone, 'projects'))
@@ -210,7 +210,7 @@ console.log('\n\x1b[1maggressive scrub: system-reminder, ide_selection, AI self-
         text: [
           'I am Claude, an AI assistant made by Anthropic.',
           '',
-          '<system-reminder>user installed a tool called dsv4f</system-reminder>',
+          '<system-reminder>user installed a tool called dsv4shim</system-reminder>',
           '',
           '<ide_selection>The user selected this paragraph</ide_selection>',
           '',
@@ -234,7 +234,7 @@ console.log('\n\x1b[1maggressive scrub: system-reminder, ide_selection, AI self-
   fs.writeFileSync(path.join(proj, 'memory', 'MEMORY.md'), memoryContent);
 
   const dst = path.join(SCRATCH, 'dst-scrub2');
-  const r = runImport(['--source', path.join(home, '.claude'), '--force'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  const r = runImport(['--source', path.join(home, '.claude'), '--force'], { env: { DSV4SHIM_PROFILE: dst } });
   check('aggressive-scrub import exits 0', r.status === 0, r.stderr);
 
   const dstTranscript = path.join(dst, 'projects', 'C--Users-scrub2', 's1.jsonl');
@@ -270,7 +270,7 @@ console.log('\n\x1b[1mincremental sync (--auto / repeat runs)\x1b[0m');
   const { src } = buildFixture();
   const dst = path.join(SCRATCH, 'dst-incremental');
 
-  const r1 = runImport(['--source', src, '--all'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  const r1 = runImport(['--source', src, '--all'], { env: { DSV4SHIM_PROFILE: dst } });
   check('first run (no --force, no prior state) exits 0', r1.status === 0, r1.stderr);
   check('first run copies everything', /files copied\s*:\s*(?!0\b)\d+/.test(r1.stdout), r1.stdout.slice(0, 300));
   check('.import-state.json written', fs.existsSync(path.join(dst, '.import-state.json')));
@@ -279,7 +279,7 @@ console.log('\n\x1b[1mincremental sync (--auto / repeat runs)\x1b[0m');
   const mtimeAfterFirst = fs.statSync(sessionA).mtimeMs;
 
   // Re-run immediately with nothing changed on the source side.
-  const r2 = runImport(['--source', src, '--all'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  const r2 = runImport(['--source', src, '--all'], { env: { DSV4SHIM_PROFILE: dst } });
   check('second run (nothing changed) exits 0', r2.status === 0, r2.stderr);
   check('second run copies nothing', /files copied\s*:\s*0\b/.test(r2.stdout), r2.stdout.slice(0, 300));
   check('second run reports unchanged files', /unchanged\s*:\s*(?!0\b)\d+/.test(r2.stdout), r2.stdout.slice(0, 300));
@@ -287,14 +287,14 @@ console.log('\n\x1b[1mincremental sync (--auto / repeat runs)\x1b[0m');
     fs.statSync(sessionA).mtimeMs === mtimeAfterFirst);
 
   // --auto --quiet: the launcher's actual invocation shape. Nothing changed -> nothing printed.
-  const r3 = runImport(['--source', src, '--auto', '--quiet'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  const r3 = runImport(['--source', src, '--auto', '--quiet'], { env: { DSV4SHIM_PROFILE: dst } });
   check('--auto --quiet with no changes prints nothing', r3.status === 0 && r3.stdout.trim() === '', JSON.stringify(r3.stdout));
 
   // Append to the source session — this is what a live, growing Claude Code session looks
   // like between two launches. Only this ONE file should be reprocessed.
   fs.appendFileSync(path.join(src, 'projects', 'C--Users-test', 'session-A.jsonl'),
     '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"a new turn since last sync"}]},"sessionId":"sA"}\n');
-  const r4 = runImport(['--source', src, '--auto', '--quiet'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  const r4 = runImport(['--source', src, '--auto', '--quiet'], { env: { DSV4SHIM_PROFILE: dst } });
   check('--auto --quiet DOES print when something changed', /synced/.test(r4.stdout), JSON.stringify(r4.stdout));
   const updated = fs.readFileSync(sessionA, 'utf8');
   check('the appended turn made it into the re-synced destination file',
@@ -302,7 +302,7 @@ console.log('\n\x1b[1mincremental sync (--auto / repeat runs)\x1b[0m');
 
   // --force ignores the manifest and redoes everything, even though nothing "changed" per
   // the manifest's own bookkeeping since the last (quiet, no-op) run.
-  const r5 = runImport(['--source', src, '--force'], { env: { CLAUDE_DSV4F_PROFILE: dst } });
+  const r5 = runImport(['--source', src, '--force'], { env: { DSV4SHIM_PROFILE: dst } });
   check('--force still reprocesses everything', /files copied\s*:\s*(?!0\b)\d+/.test(r5.stdout), r5.stdout.slice(0, 300));
 }
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * dsv4f-statusline — cross-platform port of the original statusline.sh.
+ * dsv4shim-statusline — cross-platform port of the original statusline.sh.
  *
  * The bash version needed a real POSIX shell + curl, neither guaranteed on Windows — so
- * dsv4f-setup.mjs never wired a statusLine at all there (`WIN ? undefined : {...}`), and every
+ * dsv4shim-setup.mjs never wired a statusLine at all there (`WIN ? undefined : {...}`), and every
  * Windows install silently missed the cost/context/burn-rate display under the prompt box.
- * Every dsv4f install already requires Node itself, so a pure-Node implementation removes that
+ * Every dsv4shim install already requires Node itself, so a pure-Node implementation removes that
  * platform gap instead of trying to make bash+curl a dependency on Windows.
  *
  * Claude Code's own /cost computes from an embedded price table keyed on model name; a
  * deepseek-* id misses that lookup and silently reports $0. So spend comes from the shim's
- * own ledger (GET /_dsv4f/usage) instead. Token counts in the stdin payload are accurate and
+ * own ledger (GET /_dsv4shim/usage) instead. Token counts in the stdin payload are accurate and
  * used as-is.
  */
 import fs from 'node:fs';
@@ -18,7 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 
-const CONFIG_DIR = process.env.DSV4F_CONFIG_DIR || path.join(os.homedir(), '.config', 'claude-dsv4f');
+const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(os.homedir(), '.config', 'dsv4shim');
 
 function readStdin() {
   try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
@@ -27,7 +27,7 @@ function readStdin() {
 function readPort() {
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'config.json'), 'utf8'));
-    return Number(process.env.DSV4F_PORT || cfg.port || 8788);
+    return Number(process.env.DSV4SHIM_PORT || cfg.port || 8788);
   } catch { return 8788; }
 }
 
@@ -40,7 +40,7 @@ function fetchUsage(port, sentinel) {
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     const req = http.get({
-      host: '127.0.0.1', port, path: '/_dsv4f/usage', timeout: 1000,
+      host: '127.0.0.1', port, path: '/_dsv4shim/usage', timeout: 1000,
       headers: sentinel ? { Authorization: `Bearer ${sentinel}` } : {},
     }, (res) => {
       let body = '';
@@ -61,7 +61,7 @@ const parts = [];
 // model + effort
 const effort = s.effort?.level ?? l.lastEffort ?? '?';
 const eColor = effort === 'max' ? C.red : (effort === 'none' || effort === 'low') ? C.dim : C.yel;
-parts.push(`${C.cyan}DSv4F${C.r} ${eColor}${effort}${C.r}`);
+parts.push(`${C.cyan}DSv4Shim${C.r} ${eColor}${effort}${C.r}`);
 
 // context usage
 if (s.context_window?.used_percentage != null) {

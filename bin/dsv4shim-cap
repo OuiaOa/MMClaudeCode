@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# dsv4f-cap — show or set the claude-dsv4f daily spend cap (rolling UTC day).
+# dsv4shim-cap — show or set the dsv4shim daily spend cap (rolling UTC day).
 #
 # The shim refuses new requests with HTTP 403 once the cap is reached. 403 is deliberate:
 # a 429 would trigger Claude Code's retry-with-backoff and spin instead of surfacing.
 
 set -euo pipefail
 
-CONFIG_DIR="${DSV4F_CONFIG_DIR:-$HOME/.config/claude-dsv4f}"
+CONFIG_DIR="${DSV4SHIM_CONFIG_DIR:-$HOME/.config/dsv4shim}"
 CAP_FILE="$CONFIG_DIR/cap"
 VCAP_FILE="$CONFIG_DIR/vision-cap"
 CONFIG_FILE="$CONFIG_DIR/config.json"
@@ -21,7 +21,7 @@ default_cap() {
   node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).cap?.dailyUsd ?? 5))' "$CONFIG_FILE"
 }
 port() {
-  node -e 'process.stdout.write(String(process.env.DSV4F_PORT || JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port || 8788))' "$CONFIG_FILE"
+  node -e 'process.stdout.write(String(process.env.DSV4SHIM_PORT || JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port || 8788))' "$CONFIG_FILE"
 }
 
 current() {
@@ -34,18 +34,18 @@ case "${1:-}" in
   -h|--help)
     cat <<'EOF'
 Usage:
-  dsv4f-cap              show the current cap and today's spend
-  dsv4f-cap <amount>     set the daily DeepSeek cap in USD (e.g. dsv4f-cap 10)
-  dsv4f-cap vision       show the vision (DeepInfra) daily cap and spend
-  dsv4f-cap vision 3     set the vision daily cap to $3
-  dsv4f-cap --off        disable the cap entirely (sets 0 = unlimited)
-  dsv4f-cap --reset      revert to the default from config.json
+  dsv4shim-cap              show the current cap and today's spend
+  dsv4shim-cap <amount>     set the daily DeepSeek cap in USD (e.g. dsv4shim-cap 10)
+  dsv4shim-cap vision       show the vision (DeepInfra) daily cap and spend
+  dsv4shim-cap vision 3     set the vision daily cap to $3
+  dsv4shim-cap --off        disable the cap entirely (sets 0 = unlimited)
+  dsv4shim-cap --reset      revert to the default from config.json
 EOF
     exit 0 ;;
   vision)
     if [[ -n "${2:-}" ]]; then
       if ! [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        echo "dsv4f-cap: '$2' is not a non-negative number" >&2; exit 1
+        echo "dsv4shim-cap: '$2' is not a non-negative number" >&2; exit 1
       fi
       echo "$2" > "$VCAP_FILE"
       if [[ "$2" == "0" || "$2" == "0.0" || "$2" == "0.00" ]]; then
@@ -56,7 +56,7 @@ EOF
       fi
     else
       echo "Vision daily cap: \$$(vcurrent) (UTC day)"
-      curl -sf -m 2 -H "Authorization: Bearer $(cat "$CONFIG_DIR/sentinel" 2>/dev/null)" "http://127.0.0.1:$(port)/_dsv4f/usage" 2>/dev/null \
+      curl -sf -m 2 -H "Authorization: Bearer $(cat "$CONFIG_DIR/sentinel" 2>/dev/null)" "http://127.0.0.1:$(port)/_dsv4shim/usage" 2>/dev/null \
         | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);const v=j.vision||{};process.stdout.write("Today:              $"+(v.spentUsd||0).toFixed(4)+" over "+(v.calls||0)+" image(s)  ["+(v.model||"disabled")+"]\n")}catch{}})' 2>/dev/null || true
     fi
     exit 0 ;;
@@ -66,22 +66,22 @@ EOF
     exit 0 ;;
   --off)
     echo "0" > "$CAP_FILE"
-    echo "Cap DISABLED (unlimited). Re-enable with: dsv4f-cap <amount>"
+    echo "Cap DISABLED (unlimited). Re-enable with: dsv4shim-cap <amount>"
     exit 0 ;;
   "")
     cap="$(current)"
     echo "Daily cap: \$$cap (UTC day)"
-    spend="$(curl -sf -m 2 -H "Authorization: Bearer $(cat "$CONFIG_DIR/sentinel" 2>/dev/null)" "http://127.0.0.1:$(port)/_dsv4f/usage" 2>/dev/null \
+    spend="$(curl -sf -m 2 -H "Authorization: Bearer $(cat "$CONFIG_DIR/sentinel" 2>/dev/null)" "http://127.0.0.1:$(port)/_dsv4shim/usage" 2>/dev/null \
       | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(""+`${j.todayUsd.toFixed(4)} over ${j.requests} requests`)}catch{process.stdout.write(""+"")}})' 2>/dev/null || true)"
     [[ -n "$spend" ]] && echo "Today:     \$$spend" || echo "Today:     (shim not running)"
     echo
-    echo "Vision cap (DeepInfra): \$$(vcurrent)/day   [dsv4f-cap vision <amount>]"
+    echo "Vision cap (DeepInfra): \$$(vcurrent)/day   [dsv4shim-cap vision <amount>]"
     exit 0 ;;
 esac
 
 amount="$1"
 if ! [[ "$amount" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-  echo "dsv4f-cap: '$amount' is not a non-negative number" >&2
+  echo "dsv4shim-cap: '$amount' is not a non-negative number" >&2
   exit 1
 fi
 echo "$amount" > "$CAP_FILE"

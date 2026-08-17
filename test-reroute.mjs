@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Tests for bin/dsv4f-reroute.mjs — pointing a KEPT Claude Code CLI install at the dsv4f
+ * Tests for bin/dsv4shim-reroute.mjs — pointing a KEPT Claude Code CLI install at the dsv4shim
  * shim by merging the standard env block into its own settings.json. The proven mechanism
  * (built and verified end-to-end on PC-4D, 2026-08-12) — these tests cover the merge safety
  * properties: never clobbers existing settings, never overwrites an existing env override,
@@ -9,9 +9,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { buildRerouteEnv, buildRerouteExtras, applyCliReroute, revertCliReroute } from './bin/dsv4f-reroute.mjs';
+import { buildRerouteEnv, buildRerouteExtras, applyCliReroute, revertCliReroute } from './bin/dsv4shim-reroute.mjs';
 
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4f-reroute-test-'));
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-reroute-test-'));
 process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
 
 let pass = 0, fail = 0;
@@ -20,7 +20,7 @@ function check(name, cond, detail = '') {
   else { console.log(`  \x1b[31m✗\x1b[0m ${name}${detail ? `  -> ${detail}` : ''}`); fail++; }
 }
 
-console.log('\n\x1b[1mdsv4f-reroute tests\x1b[0m\n');
+console.log('\n\x1b[1mdsv4shim-reroute tests\x1b[0m\n');
 
 console.log('\x1b[1mbuildRerouteEnv\x1b[0m');
 {
@@ -38,7 +38,7 @@ console.log('\x1b[1mbuildRerouteEnv\x1b[0m');
   check('1M context window is advertised to the CLI',
     env.CLAUDE_CODE_MAX_CONTEXT_TOKENS === '1000000');
   check('fast/background model routes to the bg sentinel', env.ANTHROPIC_SMALL_FAST_MODEL === 'deepseek-v4-flash-bg');
-  check('classifier-hang mitigations are present (from the dsv4f shim fixes)',
+  check('classifier-hang mitigations are present (from the dsv4shim shim fixes)',
     env.CLAUDE_CODE_DISABLE_FAST_MODE === '1' && env.CLAUDE_CODE_TWO_STAGE_CLASSIFIER === '0');
 }
 
@@ -144,8 +144,8 @@ console.log('\n\x1b[1mbuildRerouteExtras\x1b[0m');
   fs.writeFileSync(path.join(rootDir, 'deny-list.sh'), '#!/bin/bash\necho ok\n');
 
   const linuxExtras = buildRerouteExtras({ rootDir, platform: 'linux' });
-  check('statusLine points at dsv4f-statusline.mjs under rootDir/bin',
-    linuxExtras.statusLine.command.includes(path.join(rootDir, 'bin', 'dsv4f-statusline.mjs')));
+  check('statusLine points at dsv4shim-statusline.mjs under rootDir/bin',
+    linuxExtras.statusLine.command.includes(path.join(rootDir, 'bin', 'dsv4shim-statusline.mjs')));
   check('effortLevel defaults to high', linuxExtras.effortLevel === 'high');
   check('skipWebFetchPreflight is set', linuxExtras.skipWebFetchPreflight === true);
   check('denyListSrc included on Linux when deny-list.sh exists', linuxExtras.denyListSrc === path.join(rootDir, 'deny-list.sh'));
