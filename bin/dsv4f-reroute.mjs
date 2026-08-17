@@ -29,14 +29,18 @@ export function buildRerouteEnv({ port, sentinel }) {
   return {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     ANTHROPIC_AUTH_TOKEN: sentinel,
-    ANTHROPIC_MODEL: 'deepseek-v4-flash',
-    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-flash',
-    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash',
+    // Per-tier sentinels, not one shared name. The shim maps each back to its logical tier
+    // (config `tierSentinels`) and routes opus/fable to V4 Pro while sonnet stays on the ~3x
+    // cheaper V4 Flash. Pointing all three at a single sentinel — correct while there was only
+    // one upstream model — makes every tier arrive indistinguishable and collapses the split.
+    ANTHROPIC_MODEL: 'deepseek-v4-opus',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-opus',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-sonnet',
     ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash-bg',
     ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-v4-flash-bg',
     CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-v4-flash-sub',
-    ANTHROPIC_CUSTOM_MODEL_OPTION: 'deepseek-v4-flash',
-    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'DeepSeek V4 Flash 0731',
+    ANTHROPIC_CUSTOM_MODEL_OPTION: 'deepseek-v4-opus',
+    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'DeepSeek V4 Pro / Flash',
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
     CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: '1',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',

@@ -50,9 +50,14 @@ const seen = [];
 let classifierRetryAttempts = 0;
 let exhaustAttempts = 0;
 const mock = http.createServer((req, res) => {
-  let b = '';
-  req.on('data', d => { b += d; });
+  // Accumulate as Buffers and decode ONCE. `b += d` on a Buffer calls toString() per
+  // chunk, which corrupts any UTF-8 character straddling a chunk boundary — the exact
+  // defect the multi-byte-integrity test below exists to catch. Decoding per chunk here
+  // made this harness able to manufacture that corruption itself and blame the shim.
+  const chunks = [];
+  req.on('data', d => { chunks.push(d); });
   req.on('end', () => {
+    const b = Buffer.concat(chunks).toString('utf8');
     const body = JSON.parse(b || '{}');
     seen.push({ path: req.url, body, auth: req.headers.authorization });
 
@@ -79,6 +84,14 @@ const mock = http.createServer((req, res) => {
     if (/EXHAUST_TEST_MARKER/.test(JSON.stringify(body.system ?? ''))) {
       exhaustAttempts++;
       req.socket.destroy();
+      return;
+    }
+
+    // Test hook: a hard upstream failure. The shim must relay it AND record a ledger row —
+    // without the row, the ledger holds successes only and every 429/503 is invisible.
+    if (/UPSTREAM_FAIL_MARKER/.test(JSON.stringify(body.system ?? ''))) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'upstream overloaded' } }));
       return;
     }
 
@@ -184,9 +197,14 @@ await new Promise(r => mock.listen(MOCK_PORT, '127.0.0.1', r));
 // ------------------------------------------------------------ mock vision model
 let visionCalls = 0;
 const visionMock = http.createServer((req, res) => {
-  let b = '';
-  req.on('data', d => { b += d; });
+  // Accumulate as Buffers and decode ONCE. `b += d` on a Buffer calls toString() per
+  // chunk, which corrupts any UTF-8 character straddling a chunk boundary — the exact
+  // defect the multi-byte-integrity test below exists to catch. Decoding per chunk here
+  // made this harness able to manufacture that corruption itself and blame the shim.
+  const chunks = [];
+  req.on('data', d => { chunks.push(d); });
   req.on('end', () => {
+    const b = Buffer.concat(chunks).toString('utf8');
     visionCalls++;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
@@ -314,10 +332,20 @@ r = await send(msg({}, 'ok thanks'));
 check('short simple turn stays high', r.last?.body?.output_config?.effort === 'high');
 
 console.log('\n\x1b[1mmodel allowlist\x1b[0m');
-const before = seen.length;
+// V4 Pro is now a ROUTED model, not a denied one: it backs the main slot and the
+// opus/fable tiers (upstreamModels in config.default.json). Asking for it by name lands on
+// the main slot via `sentinels` rather than being refused.
 r = await send({ ...msg(), model: 'deepseek-v4-pro' });
-check('deepseek-v4-pro refused with 403', r.status === 403, `status=${r.status}`);
-check('pro request never reached upstream', seen.length === before);
+check('deepseek-v4-pro is served, not refused', r.status === 200, `status=${r.status}`);
+check('deepseek-v4-pro reaches upstream as itself', r.last?.body?.model === 'deepseek-v4-pro',
+  String(r.last?.body?.model));
+
+// The deny list still exists — it just no longer covers V4 Pro. Models the profile was never
+// meant to bill remain refused, so removing one entry did not disarm the guard.
+const beforeDeny = seen.length;
+r = await send({ ...msg(), model: 'deepseek-chat' });
+check('deepseek-chat still refused with 403', r.status === 403, `status=${r.status}`);
+check('denied request never reached upstream', seen.length === beforeDeny);
 check('refusal explains why', /refuses model/.test(r.text));
 
 r = await send({ ...msg(), model: 'claude-opus-4-5' });
@@ -360,10 +388,22 @@ check('captured output tokens from message_delta', streamRow?.outputTokens === 2
 check('captured cache read tokens', streamRow?.cacheReadTokens === 4000, String(streamRow?.cacheReadTokens));
 check('cost is exact when cache split present', streamRow?.exact === true);
 
-// 1000 miss + 0 create @0.14/M + 4000 hit @0.0028/M + 250 out @0.28/M
-const expected = (1000 / 1e6) * 0.14 + (4000 / 1e6) * 0.0028 + (250 / 1e6) * 0.28;
+// Priced against the model that actually served the turn, not a single global rate. This
+// request carries the bare main-slot sentinel, so upstreamModels.slots.main routes it to
+// deepseek-v4-pro and it is billed at Pro's rates.
+check('ledger records the real upstream model, not the routing sentinel',
+  streamRow?.model === 'deepseek-v4-pro', String(streamRow?.model));
+
+// 1000 miss + 0 create @0.66/M + 4000 hit @0.022/M + 250 out @1.98/M, times whatever peak
+// multiplier was in force when the row was written. peakSurcharge is live now, so that is 1
+// or 2 depending on the UTC hour the suite happens to run in — read it back off the row
+// rather than hardcoding one, which would make the suite fail for seven hours a day.
+const PRO_RATES = { cacheHitInput: 0.022, cacheMissInput: 0.66, output: 1.98 };
+const expected = ((1000 / 1e6) * PRO_RATES.cacheMissInput
+  + (4000 / 1e6) * PRO_RATES.cacheHitInput
+  + (250 / 1e6) * PRO_RATES.output) * (streamRow?.peakMultiplier ?? 1);
 check('cost priced correctly', Math.abs(streamRow.costUsd - expected) < 1e-9,
-  `got ${streamRow?.costUsd} want ${expected}`);
+  `got ${streamRow?.costUsd} want ${expected} (peak x${streamRow?.peakMultiplier})`);
 
 // Regression: a 200 response upstream is always billed, even when its body isn't JSON
 // (previously swallowed by `catch { /* ignore */ }` with no record() call at all — an
@@ -496,9 +536,14 @@ check('text-only request never touches the vision model', visionCalls === callsB
 let lastVisionBody = null;
 visionMock.removeAllListeners('request');
 visionMock.on('request', (req, res) => {
-  let b = '';
-  req.on('data', d => { b += d; });
+  // Accumulate as Buffers and decode ONCE. `b += d` on a Buffer calls toString() per
+  // chunk, which corrupts any UTF-8 character straddling a chunk boundary — the exact
+  // defect the multi-byte-integrity test below exists to catch. Decoding per chunk here
+  // made this harness able to manufacture that corruption itself and blame the shim.
+  const chunks = [];
+  req.on('data', d => { chunks.push(d); });
   req.on('end', () => {
+    const b = Buffer.concat(chunks).toString('utf8');
     visionCalls++;
     try { lastVisionBody = JSON.parse(b); } catch { lastVisionBody = null; }
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -815,14 +860,14 @@ check('model mapper: haiku traffic lands on background slot (effort:none), not m
 // so this only matters for a Desktop/Cowork-style client that leaves it unset, which is what
 // `msg()` here simulates.
 r = await send({ ...msg(), model: 'claude-opus-5-20251101' });
-check('model mapper: current flagship (opus-5) -> main, tier default max (thinking enabled)',
-  r.last?.body?.output_config?.effort === 'max' && r.last?.body?.thinking?.type !== 'disabled',
+check('model mapper: current flagship (opus-5) -> main, tier default high (thinking enabled)',
+  r.last?.body?.output_config?.effort === 'high' && r.last?.body?.thinking?.type !== 'disabled',
   JSON.stringify({ output_config: r.last?.body?.output_config, thinking: r.last?.body?.thinking }));
 
-// Sonnet's tier default is 'high', same as the flat slot default, so this also covers the
-// no-tier-match fallback path staying correct.
+// Sonnet's tier default is 'max' — it runs on the cheaper V4 Flash, so it is given the
+// deeper reasoning budget rather than the shallower one.
 r = await send({ ...msg(), model: 'claude-sonnet-5-20251101' });
-check('model mapper: current flagship (sonnet-5) -> main, tier default high', r.last?.body?.output_config?.effort === 'high');
+check('model mapper: current flagship (sonnet-5) -> main, tier default max', r.last?.body?.output_config?.effort === 'max');
 
 r = await send({ ...msg(), model: 'claude-3-5-sonnet-20241022' });
 check('model mapper: non-current sonnet (3-5) -> background, NOT main (was the old behavior)',
@@ -923,12 +968,12 @@ check('Fable tier with no client effort -> max',
   r.last?.body?.output_config?.effort === 'max', JSON.stringify(r.last?.body?.output_config));
 
 r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.opus ?? 'claude-opus-5' });
-check('Opus tier with no client effort -> max',
-  r.last?.body?.output_config?.effort === 'max', JSON.stringify(r.last?.body?.output_config));
+check('Opus tier with no client effort -> high',
+  r.last?.body?.output_config?.effort === 'high', JSON.stringify(r.last?.body?.output_config));
 
 r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.sonnet ?? 'claude-sonnet-5' });
-check('Sonnet tier with no client effort -> high',
-  r.last?.body?.output_config?.effort === 'high', JSON.stringify(r.last?.body?.output_config));
+check('Sonnet tier with no client effort -> max',
+  r.last?.body?.output_config?.effort === 'max', JSON.stringify(r.last?.body?.output_config));
 
 r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.haiku ?? 'claude-haiku-4-5-20251001' });
 check('Haiku tier with no client effort -> thinking disabled (effort:none), same as background slot',
@@ -936,26 +981,167 @@ check('Haiku tier with no client effort -> thinking disabled (effort:none), same
 
 // A client-specified effort always overrides the tier default, for any tier.
 r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.opus ?? 'claude-opus-5', output_config: { effort: 'low' } });
-check('Opus tier: explicit client effort (low) overrides the tier default (max)',
+check('Opus tier: explicit client effort (low) overrides the tier default (high)',
   r.last?.body?.output_config?.effort === 'low', JSON.stringify(r.last?.body?.output_config));
 
-// All four tiers must reach the exact same upstream model (deepseek-v4-flash) and never
-// deepseek-v4-pro, regardless of tier or effort — the doc's hard release-blocking requirement.
+// Tiers now split across TWO real models. The capable tiers (opus/fable) run on V4 Pro; the
+// cheap ones (sonnet/haiku) stay on V4 Flash, which is ~3x cheaper on every axis. This
+// replaces the former single-model guarantee: the point is no longer that nothing reaches
+// Pro, but that each tier reaches exactly the model it was assigned and no other.
 {
-  const tierIds = [
-    cfg.desktop?.tierModelIds?.fable ?? 'claude-fable-5',
-    cfg.desktop?.tierModelIds?.opus ?? 'claude-opus-5',
-    cfg.desktop?.tierModelIds?.sonnet ?? 'claude-sonnet-5',
-    cfg.desktop?.tierModelIds?.haiku ?? 'claude-haiku-4-5-20251001',
-  ];
-  const results = [];
-  for (const id of tierIds) {
+  const expectPerTier = {
+    fable: 'deepseek-v4-pro',
+    opus: 'deepseek-v4-pro',
+    sonnet: 'deepseek-v4-flash',
+    haiku: 'deepseek-v4-flash',
+  };
+  const fallbackIds = {
+    fable: 'claude-fable-5', opus: 'claude-opus-5',
+    sonnet: 'claude-sonnet-5', haiku: 'claude-haiku-4-5-20251001',
+  };
+  const results = {};
+  for (const [tier, want] of Object.entries(expectPerTier)) {
+    const id = cfg.desktop?.tierModelIds?.[tier] ?? fallbackIds[tier];
     const rr = await send({ ...msg(), model: id });
-    results.push(rr.last?.body?.model);
+    results[tier] = rr.last?.body?.model;
+    check(`tier ${tier} -> ${want}`, results[tier] === want, JSON.stringify(results));
   }
-  check('all 4 tiers resolve upstream model to cfg.model (deepseek-v4-flash) only',
-    results.every(m => m === cfg.model), JSON.stringify(results));
-  check('zero tiers ever reach deepseek-v4-pro', !results.some(m => /pro/i.test(String(m))), JSON.stringify(results));
+  // Only the two configured models may ever be billed. A typo in upstreamModels that let a
+  // sentinel or an unpriced third model through would otherwise bill silently at $0, since
+  // ratesFor() returns zeros for anything it has no rate for.
+  const allowed = new Set(Object.keys(cfg.rates || {}).filter(k => !k.startsWith('_') && k !== 'effectiveFrom' && k !== 'source'));
+  check('every tier lands on a model that has configured rates',
+    Object.values(results).every(m => allowed.has(m)),
+    `got ${JSON.stringify(results)} allowed ${JSON.stringify([...allowed])}`);
+}
+
+// --- CLI tier sentinels ----------------------------------------------------------
+// Desktop identifies a tier by a Claude-looking model ID; the CLI cannot, because reroute
+// points ANTHROPIC_DEFAULT_*_MODEL at sentinels. These per-tier sentinels are what carry the
+// tier through for CLI traffic — the single largest source of requests. If they stopped
+// resolving, every CLI tier would quietly land on one model and one effort level.
+console.log('\n\x1b[1mCLI tier sentinels\x1b[0m');
+{
+  const cases = [
+    ['deepseek-v4-opus',   'deepseek-v4-pro',   'high'],
+    ['deepseek-v4-fable',  'deepseek-v4-pro',   'max'],
+    ['deepseek-v4-sonnet', 'deepseek-v4-flash', 'max'],
+  ];
+  for (const [sentinel, wantModel, wantEffort] of cases) {
+    const rr = await send({ ...msg(), model: sentinel });
+    check(`${sentinel} -> ${wantModel} @ ${wantEffort}`,
+      rr.last?.body?.model === wantModel && rr.last?.body?.output_config?.effort === wantEffort,
+      JSON.stringify({ model: rr.last?.body?.model, effort: rr.last?.body?.output_config?.effort }));
+  }
+
+  // The background sentinel must NOT pick up a tier: it is compaction/title/classifier
+  // traffic, and giving it a reasoning budget is what caused the ~25-50x background-cost bug.
+  const bg = await send({ ...msg(), model: 'deepseek-v4-flash-bg' });
+  check('background sentinel stays on flash with thinking disabled',
+    bg.last?.body?.model === 'deepseek-v4-flash' && bg.last?.body?.thinking?.type === 'disabled',
+    JSON.stringify({ model: bg.last?.body?.model, thinking: bg.last?.body?.thinking }));
+
+  // Subagents run on the cheap model on purpose: ultracode promotes them to max effort and
+  // fans out, so this is the slot where a 3x price difference compounds hardest.
+  const sub = await send({ ...msg(), model: 'deepseek-v4-flash-sub' });
+  check('subagent slot runs on flash', sub.last?.body?.model === 'deepseek-v4-flash',
+    String(sub.last?.body?.model));
+
+  // A deliberately chosen level still beats the tier default (autoLevel means "no preference",
+  // anything else is a real choice).
+  const pinned = await send({ ...msg(), model: 'deepseek-v4-fable', output_config: { effort: 'low' } });
+  check('explicit effort still overrides a tier default on the CLI path',
+    pinned.last?.body?.output_config?.effort === 'low',
+    JSON.stringify(pinned.last?.body?.output_config));
+}
+
+// --- ultracode swarm hint --------------------------------------------------------
+console.log('\n\x1b[1multracode swarm hint\x1b[0m');
+{
+  const sysTextOf = (res) => (typeof res.last?.body?.system === 'string'
+    ? res.last.body.system
+    : (res.last?.body?.system || []).map(b => b?.text || '').join('\n'));
+  const sid = 'swarm-session-1';
+
+  // Ordinary traffic must NOT carry it — it is noise outside a fan-out, and it would sit in
+  // the cached prefix of every unrelated session.
+  const plain = await send(msg({ metadata: { user_id: 'unrelated-session' } }));
+  check('no swarm hint on ordinary turns', !/PARALLEL DISPATCH:/.test(sysTextOf(plain)));
+
+  // xhigh marks the session as ultracode (see markUltracode).
+  await send(msg({ metadata: { user_id: sid }, output_config: { effort: 'xhigh' } }));
+  const after = await send(msg({ metadata: { user_id: sid } }));
+  check('swarm hint appears on main-slot turns once ultracode is engaged',
+    /PARALLEL DISPATCH:/.test(sysTextOf(after)), sysTextOf(after).slice(-200));
+  check('swarm hint asks for one message carrying many Task blocks',
+    /SINGLE assistant message/.test(sysTextOf(after)));
+
+  // Applied once: repeating it would waste prefix and add nothing.
+  const again = await send(msg({ metadata: { user_id: sid }, system: 'base prompt' }));
+  const n = (sysTextOf(again).match(/PARALLEL DISPATCH:/g) || []).length;
+  check('swarm hint applied exactly once', n === 1, `x${n}`);
+
+  // Subagents must not be told to swarm, or fan-outs nest inside fan-outs.
+  const subr = await send({ ...msg({ metadata: { user_id: sid } }), model: 'deepseek-v4-flash-sub' });
+  check('subagent turns never carry the swarm hint', !/PARALLEL DISPATCH:/.test(sysTextOf(subr)));
+}
+
+// --- temporal anchor -------------------------------------------------------------
+// Claude Code sends no calendar date and DeepSeek has no clock, so without this the model
+// dates "today" from whatever the transcript last mentioned — wrong weekday, wrong
+// days-remaining, and wrong scheduling the moment it acts on either.
+console.log('\n\x1b[1mtemporal anchor\x1b[0m');
+{
+  const sysTextOf = (res) => (typeof res.last?.body?.system === 'string'
+    ? res.last.body.system
+    : (res.last?.body?.system || []).map(b => b?.text || '').join('\n'));
+
+  const r1 = await send(msg());
+  const sys1 = sysTextOf(r1);
+  check('system prompt carries a current-date anchor', /CURRENT DATE:/.test(sys1), sys1.slice(0, 240));
+
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: tz });
+  check('anchor states the real current date', sys1.includes(todayIso), `want ${todayIso} in: ${sys1.slice(-240)}`);
+  check('anchor tells the model not to date itself from the transcript',
+    /never .{0,40}infer today/i.test(sys1), sys1.slice(-240));
+
+  // Cache safety, and the reason the anchor is day-granular rather than a timestamp:
+  // DeepSeek keys its cache on the prompt PREFIX and prices a hit ~30x below a miss, so an
+  // anchor that changed between two requests in the same day would re-cache every whole
+  // conversation on every turn — a large, silent cost regression.
+  const r2 = await send(msg({}, 'an entirely different question'));
+  const a1 = (sys1.match(/CURRENT DATE:[^\n]*/) || [''])[0];
+  const a2 = ((sysTextOf(r2)).match(/CURRENT DATE:[^\n]*/) || [''])[0];
+  check('anchor is byte-identical within one day (prefix cache preserved)', a1 === a2, `${a1}\n vs \n${a2}`);
+
+  // Appending twice would both waste prefix and read as contradictory if the day rolled
+  // between passes, so the marker is idempotent.
+  const pre = 'You are a helpful assistant.';
+  const r3 = await send(msg({ system: pre }));
+  const occurrences = (sysTextOf(r3).match(/CURRENT DATE:/g) || []).length;
+  check('anchor applied exactly once to an existing system prompt', occurrences === 1, `x${occurrences}`);
+  check('existing system prompt is preserved, not replaced', sysTextOf(r3).startsWith(pre), sysTextOf(r3).slice(0, 80));
+}
+
+// --- failure rows reach the ledger -----------------------------------------------
+// The ledger previously recorded only successes, which made "100% status 200" a tautology
+// rather than evidence of a healthy upstream and hid every 429/503 from dsv4f-usage.
+console.log('\n\x1b[1mledger records failures\x1b[0m');
+{
+  const readLedger = () => fs.readFileSync(path.join(DATA_DIR, 'usage.jsonl'), 'utf8')
+    .split('\n').filter(l => l.startsWith('{')).map(l => JSON.parse(l));
+  const before = readLedger().length;
+  const rr = await send(msg({ system: 'UPSTREAM_FAIL_MARKER' }));
+  await new Promise(res => setTimeout(res, 200));
+  const rows = readLedger();
+  const added = rows.slice(before);
+  check('a non-2xx upstream response produces a ledger row', added.length >= 1, `added ${added.length}`);
+  check('the failure row carries the real upstream status',
+    added.some(x => x.status === rr.status && x.status >= 400), JSON.stringify(added.map(x => x.status)));
+  check('the failure row names the model that was attempted',
+    added.every(x => typeof x.model === 'string' && x.model.startsWith('deepseek-')),
+    JSON.stringify(added.map(x => x.model)));
 }
 
 // --- concurrency: two simultaneous streaming requests must not mix content ---

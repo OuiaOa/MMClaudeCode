@@ -27,7 +27,16 @@ console.log('\x1b[1mbuildRerouteEnv\x1b[0m');
   const env = buildRerouteEnv({ port: 8788, sentinel: 'test-sentinel-abc' });
   check('base URL points at the given port', env.ANTHROPIC_BASE_URL === 'http://127.0.0.1:8788');
   check('auth token is the given sentinel', env.ANTHROPIC_AUTH_TOKEN === 'test-sentinel-abc');
-  check('model routes to deepseek-v4-flash', env.ANTHROPIC_MODEL === 'deepseek-v4-flash');
+  check('model routes to the opus tier sentinel', env.ANTHROPIC_MODEL === 'deepseek-v4-opus');
+  // Each tier must arrive under its OWN name. One shared sentinel would make opus, sonnet and
+  // fable indistinguishable at the shim and silently collapse them onto a single model.
+  check('opus and sonnet use distinct tier sentinels',
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL !== env.ANTHROPIC_DEFAULT_SONNET_MODEL,
+    `${env.ANTHROPIC_DEFAULT_OPUS_MODEL} vs ${env.ANTHROPIC_DEFAULT_SONNET_MODEL}`);
+  check('background/haiku stays on its own cheap sentinel',
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL === 'deepseek-v4-flash-bg');
+  check('1M context window is advertised to the CLI',
+    env.CLAUDE_CODE_MAX_CONTEXT_TOKENS === '1000000');
   check('fast/background model routes to the bg sentinel', env.ANTHROPIC_SMALL_FAST_MODEL === 'deepseek-v4-flash-bg');
   check('classifier-hang mitigations are present (from the dsv4f shim fixes)',
     env.CLAUDE_CODE_DISABLE_FAST_MODE === '1' && env.CLAUDE_CODE_TWO_STAGE_CLASSIFIER === '0');
@@ -66,7 +75,7 @@ console.log('\n\x1b[1mapplyCliReroute: existing settings.json is preserved, not 
   const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   check('pre-existing enabledPlugins untouched', written.enabledPlugins['code-review@x'] === true);
   check('pre-existing permissions untouched', written.permissions.defaultMode === 'default');
-  check('env block was added alongside existing keys', written.env.ANTHROPIC_MODEL === 'deepseek-v4-flash');
+  check('env block was added alongside existing keys', written.env.ANTHROPIC_MODEL === 'deepseek-v4-opus');
   const backedUp = JSON.parse(fs.readFileSync(r.backupPath, 'utf8'));
   check('backup is byte-faithful to the ORIGINAL (no env block in it)', backedUp.env === undefined);
 }

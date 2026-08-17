@@ -8,14 +8,39 @@
   "model": "deepseek-v4-flash",
   "fastModel": "deepseek-v4-flash-bg",
   "_fastModelNote": "modelMapper() rewrites claude-3-5-haiku* (compaction, subagent dispatch, window-topic detection) to this sentinel so resolveModel() slots it as background (effort:none) instead of falling through to `model` at main-slot effort:high — was previously ~25-50x the intended cost for that traffic class.",
+  "_modelIsASentinelNote": "`model`/`fastModel` are ROUTING sentinels, not the model actually billed. They name a slot (see `sentinels`); the real upstream model is chosen per tier/slot by `upstreamModels` below and force-set in transformRequest(). Two models are now in play, so the name that reaches DeepSeek is no longer always this one.",
   "expectedVersion": "DeepSeek-V4-Flash-0731",
   "sentinels": {
     "deepseek-v4-flash": "main",
+    "deepseek-v4-pro": "main",
     "deepseek-v4-flash-sub": "subagent",
-    "deepseek-v4-flash-bg": "background"
+    "deepseek-v4-flash-bg": "background",
+    "deepseek-v4-opus": "main",
+    "deepseek-v4-sonnet": "main",
+    "deepseek-v4-fable": "main"
+  },
+  "tierSentinels": {
+    "_comment": "Maps a per-tier sentinel to its logical tier, so upstreamModels.tiers and effort.tierDefaults apply to Claude Code CLI traffic and not only to Desktop/Cowork. Necessary because reroute sets ANTHROPIC_DEFAULT_*_MODEL to sentinels rather than Claude-looking IDs: without this table every CLI tier arrives indistinguishable, tierOf() returns null, and opus/sonnet/fable all collapse onto the single main-slot model. Desktop keeps working through desktop.tierModelIds, which tierOf() still checks.",
+    "deepseek-v4-opus": "opus",
+    "deepseek-v4-sonnet": "sonnet",
+    "deepseek-v4-fable": "fable"
+  },
+  "upstreamModels": {
+    "_comment": "The REAL model id sent upstream, and the key `rates` is priced against. Resolution order in pickUpstreamModel(): tiers[tier] -> slots[slot] -> default. Tier beats slot because Claude Code and Desktop both send a Claude-looking model ID per tier (claude-opus-5 etc.) that tierOf() reads BEFORE modelMapper() collapses it to a slot sentinel — without the tier rule, opus/sonnet/fable would all share one slot and could not be split across models.",
+    "default": "deepseek-v4-pro",
+    "tiers": {
+      "opus": "deepseek-v4-pro",
+      "fable": "deepseek-v4-pro",
+      "sonnet": "deepseek-v4-flash",
+      "haiku": "deepseek-v4-flash"
+    },
+    "slots": {
+      "main": "deepseek-v4-pro",
+      "subagent": "deepseek-v4-flash",
+      "background": "deepseek-v4-flash"
+    }
   },
   "denyModelPatterns": [
-    "deepseek-v4-pro",
     "deepseek-reasoner",
     "deepseek-chat"
   ],
@@ -38,6 +63,8 @@
     },
     "ultrathinkPromotesToMax": true,
     "ultracodePromotesSubagents": true,
+    "ultracodeSwarmHint": true,
+    "_ultracodeSwarmHintNote": "Appends an explicit parallel-dispatch instruction to the system prompt on main-slot turns in an ultracode session. MEASURED from the ledger: a real ultracode run made 147 subagent requests over 35 minutes but never more than 7 at once, and 115 of its dispatch windows held exactly one — a parent emitting one Task block per turn and looping, where Claude emits 20+ in a single message. The shim throttles nothing (no queue, semaphore or concurrency cap exists), so the fan-out width is the model's own choice and asking explicitly is the only lever. Set false to remove the instruction.",
     "heuristic": {
       "enabled": true,
       "threshold": 2,
@@ -49,11 +76,13 @@
       "onlyWhenAuto": true
     },
     "tierDefaults": {
-      "_comment": "Reasoning-effort DEFAULT for each Claude Desktop/Cowork logical tier (see `desktop.tierModelIds` below), used only when the client sends no explicit effort/thinking field of its own — an explicit client value always wins. Claude Code CLI is unaffected: it always sends its own effort field (see _autoSemantics), so this only matters for Desktop/Cowork traffic. Optional — omitting this key entirely falls back to the same values hard-coded in shim.mjs.",
+      "_comment": "Reasoning-effort default per logical tier. Applies when the client sends no effort field at all (Desktop/Cowork) AND when it sends exactly `autoLevel`, which Claude Code CLI does on every request and which means 'no preference' (see _autoSemantics). A level the user deliberately picked — anything other than autoLevel — still wins over this. Optional; omitting the key falls back to the same values hard-coded in shim.mjs.",
+      "_pairsWith": "upstreamModels.tiers — opus/fable run on v4-pro, sonnet/haiku on v4-flash, so this table is the effort half of the same ladder.",
       "fable": "max",
-      "opus": "max",
-      "sonnet": "high",
-      "haiku": "none"
+      "opus": "high",
+      "sonnet": "max",
+      "haiku": "low",
+      "_haikuNote": "Reached only when haiku traffic lands on a non-background slot (a Desktop/Cowork tier pick). Claude Code CLI's own haiku traffic is compaction/title/classifier work routed to slot:background, which returns effort:none before any tier default is consulted — deliberately, since that early return is what fixed the ~25-50x background-cost bug."
     },
     "ultracodeTtlMinutes": 120,
     "_measuredEnum": "MEASURED 2026-08-06 from a live 400: low|medium|high|xhigh|ultra|max. There is NO none — thinking is disabled via thinking:{type:disabled} instead. `ultra` is undocumented.",
@@ -63,17 +92,24 @@
     "_autoSemantics": "MEASURED: Claude Code always sends an effort level, so there is no absent state. autoLevel (high) is treated as no-preference and may be escalated by the heuristic; any other level the user picks is honoured verbatim. ultrathink overrides both."
   },
   "rates": {
-    "effectiveFrom": "2026-08-06",
+    "effectiveFrom": "2026-08-17",
     "source": "https://api-docs.deepseek.com/quick_start/pricing",
+    "_comment": "OFF-PEAK rates, USD per 1,000,000 tokens. peakSurcharge doubles them inside its windows, which reproduces the published peak column exactly. Keyed by the REAL upstream model chosen in upstreamModels, not by the routing sentinel — priceUsage() is passed that model so a v4-pro main turn and a v4-flash subagent turn in the same session are priced apart.",
+    "_priceChange": "Checked against the live pricing page 2026-08-17: the announced increase HAS taken effect. v4-flash output went 0.28 -> 0.66 (2.4x) and cache-miss input 0.14 -> 0.22; the previous table here was the pre-increase 2026-08-06 one. v4-pro is a flat 3x v4-flash on every axis.",
     "deepseek-v4-flash": {
-      "cacheHitInput": 0.0028,
-      "cacheMissInput": 0.14,
-      "output": 0.28
+      "cacheHitInput": 0.007,
+      "cacheMissInput": 0.22,
+      "output": 0.66
+    },
+    "deepseek-v4-pro": {
+      "cacheHitInput": 0.022,
+      "cacheMissInput": 0.66,
+      "output": 1.98
     }
   },
   "peakSurcharge": {
-    "_comment": "Announced 2x peak pricing, NOT yet in effect as of 2026-08-06. Windows are UTC (09:00-12:00 and 14:00-18:00 Beijing = UTC+8). Enable only when DeepSeek announces activation; --reconcile will warn if drawdown suggests it went live.",
-    "enabled": false,
+    "_comment": "2x peak pricing. CONFIRMED LIVE 2026-08-17 against the pricing page ('Off-peak rates are 50% of peak rates'), so this is now enabled — it was announced-but-dormant when this config was written on 2026-08-06. Windows are UTC (09:00-12:00 and 14:00-18:00 Beijing = UTC+8) and match the published 01:00-04:00 / 06:00-10:00 UTC peak hours exactly.",
+    "enabled": true,
     "multiplier": 2,
     "utcWindows": [
       [
@@ -112,6 +148,13 @@
       "haiku": "claude-haiku-4-5-20251001"
     }
   },
+  "temporal": {
+    "_comment": "Appends today's date to the system prompt. Claude Code sends no calendar date and DeepSeek has no clock, so without this the model infers 'today' from the last date mentioned in the transcript — producing wrong weekdays and wrong days-remaining once it starts scheduling. Set enabled:false to remove it.",
+    "_granularityNote": "DAY granularity, not clock time, and that is load-bearing: DeepSeek's cache keys on the prompt PREFIX and prices a hit ~30x under a miss, so a value that moved every minute would re-cache the whole conversation every turn. This changes once per local midnight.",
+    "enabled": true,
+    "timezone": ""
+  },
+  "_timezoneNote": "Empty means the host's own zone via Intl (Australia/Brisbane on these machines). Set an IANA name to pin it.",
   "cacheHygiene": {
     "stripUserId": true,
     "stripCacheControl": true

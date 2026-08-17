@@ -161,8 +161,25 @@ function rollDayIfNeeded() {
 
 // -------------------------------------------------------------------- pricing
 
-function ratesFor() {
-  return cfg.rates?.[MODEL] || { cacheHitInput: 0, cacheMissInput: 0, output: 0 };
+/**
+ * Rates are keyed by the REAL upstream model. With two models in play that is no longer
+ * always `MODEL`: one session mixes a v4-pro main turn with v4-flash subagent and background
+ * turns, priced 3x apart. Callers pass the model the request was actually billed against —
+ * pickUpstreamModel()'s result, carried through record().
+ *
+ * An unconfigured model returns zeros rather than throwing, so the proxy keeps serving; that
+ * spend records as $0 and does not restrain the cap, which is why the miss is logged once.
+ */
+const _unpricedWarned = new Set();
+function ratesFor(model = MODEL) {
+  const r = cfg.rates?.[model];
+  if (r) return r;
+  if (!_unpricedWarned.has(model)) {
+    _unpricedWarned.add(model);
+    log(`WARNING: no rates for upstream model "${model}" — its spend records as $0 and does ` +
+        `NOT count against the daily cap. Add it under "rates" in ${CONFIG_FILE}.`);
+  }
+  return { cacheHitInput: 0, cacheMissInput: 0, output: 0 };
 }
 
 function peakMultiplier(date = new Date()) {
@@ -179,8 +196,8 @@ function peakMultiplier(date = new Date()) {
  * enforce the cap on the pessimistic one. `dsv4f-usage --reconcile` later solves for the
  * true hit ratio from exact balance drawdown.
  */
-function priceUsage(u, date = new Date()) {
-  const r = ratesFor();
+function priceUsage(u, date = new Date(), model = MODEL) {
+  const r = ratesFor(model);
   const mult = peakMultiplier(date);
   const out = u.output_tokens || 0;
   const outCost = (out / 1e6) * r.output;
@@ -403,7 +420,7 @@ const DEFAULT_TIER_MODEL_IDS = {
   fable: 'claude-fable-5',
   haiku: 'claude-haiku-4-5-20251001',
 };
-const DEFAULT_TIER_REASONING_DEFAULTS = { fable: 'max', opus: 'max', sonnet: 'high', haiku: 'none' };
+const DEFAULT_TIER_REASONING_DEFAULTS = { fable: 'max', opus: 'high', sonnet: 'max', haiku: 'low' };
 
 function resolveTierModelIds() {
   return { ...DEFAULT_TIER_MODEL_IDS, ...(cfg.desktop?.tierModelIds || {}) };
@@ -417,12 +434,49 @@ function resolveTierModelIds() {
  */
 function tierOf(model) {
   const m = String(model || '');
+  // Per-tier sentinels first. Reroute points ANTHROPIC_DEFAULT_*_MODEL at these rather than
+  // at Claude-looking IDs, so for CLI traffic this is the ONLY signal that survives to here —
+  // without it every CLI tier looks identical and the whole per-tier split silently collapses
+  // onto one model. Exact match: sentinels are chosen names, never dated variants.
+  const ts = cfg.tierSentinels || {};
+  if (Object.prototype.hasOwnProperty.call(ts, m) && typeof ts[m] === 'string' && !m.startsWith('_')) return ts[m];
   const ids = resolveTierModelIds();
   for (const [tier, id] of Object.entries(ids)) {
     if (!id) continue;
     if (new RegExp('^' + id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(m)) return tier;
   }
   return null;
+}
+
+/**
+ * The real model name sent upstream and billed, as distinct from `MODEL`/`cfg.fastModel`,
+ * which are routing sentinels naming a slot. Two models are now in play (V4 Pro for the
+ * capable tiers, V4 Flash for the cheap ones), so this is the single place that decides
+ * which one a request costs.
+ *
+ * Tier outranks slot. Claude Code and Desktop both send a Claude-looking per-tier ID
+ * (claude-opus-5, claude-sonnet-5, …) that tierOf() reads BEFORE modelMapper() collapses it
+ * to a slot sentinel; without the tier rule opus, sonnet and fable would share slot 'main'
+ * and could not be split across two models at all. Slot still decides everything tierless —
+ * notably CLI background traffic, which carries the bare sentinel and must stay on Flash.
+ *
+ * Falls back through slot then `default`, so a config predating `upstreamModels` (or one
+ * naming a tier/slot this build doesn't know) still resolves to a real model instead of
+ * sending a sentinel upstream as if it were one.
+ */
+const DEFAULT_UPSTREAM_MODELS = {
+  default: 'deepseek-v4-pro',
+  tiers: { opus: 'deepseek-v4-pro', fable: 'deepseek-v4-pro', sonnet: 'deepseek-v4-flash', haiku: 'deepseek-v4-flash' },
+  slots: { main: 'deepseek-v4-pro', subagent: 'deepseek-v4-flash', background: 'deepseek-v4-flash' },
+};
+
+function pickUpstreamModel(tier, slot) {
+  const um = cfg.upstreamModels || {};
+  const tiers = { ...DEFAULT_UPSTREAM_MODELS.tiers, ...(um.tiers || {}) };
+  const slots = { ...DEFAULT_UPSTREAM_MODELS.slots, ...(um.slots || {}) };
+  const model = (tier && tiers[tier]) || slots[slot] || um.default || DEFAULT_UPSTREAM_MODELS.default;
+  const why = (tier && tiers[tier]) ? `tier:${tier}` : (slots[slot] ? `slot:${slot}` : 'default');
+  return { model, why };
 }
 
 // ----------------------------------------- response sanitizers
@@ -711,9 +765,17 @@ function decideEffort(body, slot, sessionKey, isClassifierV2 = false, tier = nul
   // unset, a known tier's own default takes priority over the flat slot default — this is what
   // gives Sonnet a lower default (high) than Opus/Fable (max) despite all three sharing the
   // 'main' slot. A client-specified effort (translated) always wins regardless of tier.
+  // A client that sent exactly `autoLevel` expressed no preference — Claude Code CLI sends an
+  // effort field on EVERY request (see _autoSemantics), so treating any value as deliberate
+  // would mean a tier default could only ever apply to Desktop/Cowork and never to the CLI,
+  // which is where nearly all traffic is. Only a level differing from autoLevel is a real
+  // choice, and that still outranks the tier.
+  const AUTO_LEVEL = E.autoLevel || 'high';
   const tierDefault = tier ? (E.tierDefaults?.[tier] ?? DEFAULT_TIER_REASONING_DEFAULTS[tier]) : null;
-  let effort = translated || tierDefault || E.slotDefaults.main;
-  let why = translated ? 'client' : (tierDefault ? `tier:${tier}` : 'slot:main');
+  const clientChose = translated && translated !== AUTO_LEVEL;
+  let effort = clientChose ? translated : (tierDefault || translated || E.slotDefaults.main);
+  let why = clientChose ? 'client'
+    : (tierDefault ? `tier:${tier}` : (translated ? 'client:auto' : 'slot:main'));
 
   if (effort === 'none') return { effort, why };
 
@@ -732,8 +794,7 @@ function decideEffort(body, slot, sessionKey, isClassifierV2 = false, tier = nul
   // preference": leave the session at it and the heuristic may escalate; deliberately choose
   // any other level and it is honoured verbatim. Without this an explicit `low` could be
   // escalated to `ultra` — spending more precisely when the user asked to spend less.
-  const autoLevel = E.autoLevel || 'high';
-  const isAuto = !translated || translated === autoLevel;
+  const isAuto = !translated || translated === AUTO_LEVEL;
   const h = E.heuristic;
   if (h?.enabled && (!h.onlyWhenAuto || isAuto)) {
     let score = 0;
@@ -1176,9 +1237,91 @@ function appendVisionHint(body) {
   }
 }
 
-function transformRequest(body, effort) {
-  body.model = MODEL;
+/**
+ * Claude Code's system prompt carries no calendar date and DeepSeek has no clock, so the
+ * model infers "today" from whatever date the transcript last mentioned — or from when the
+ * session began. That yields confidently wrong weekday and days-remaining arithmetic, which
+ * stops being cosmetic the moment the agent schedules something.
+ *
+ * Anchored at DAY granularity deliberately. DeepSeek prices a cache hit ~30x below a miss and
+ * keys the cache on the prompt PREFIX, so a timestamp that moved every minute would re-cache
+ * the whole conversation every turn. A value that changes once per local midnight costs one
+ * re-cache per day and still fixes the arithmetic. Time-of-day is left out for that reason.
+ */
+const TEMPORAL = cfg.temporal || {};
+const TEMPORAL_MARK = 'CURRENT DATE:';
+let _temporalDay = '';
+let _temporalText = '';
+
+function temporalAnchorText(now = new Date()) {
+  const tz = TEMPORAL.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const iso = now.toLocaleDateString('en-CA', { timeZone: tz });   // YYYY-MM-DD
+  if (iso === _temporalDay) return _temporalText;
+  const pretty = now.toLocaleDateString('en-GB', {
+    timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+  _temporalDay = iso;
+  _temporalText =
+    `\n\n${TEMPORAL_MARK} ${pretty} (${iso}, ${tz}). Read from the system clock when this ` +
+    `request was made, and authoritative. Every other date in this conversation is historical ` +
+    `context, including dates in earlier messages and in your own previous replies — never ` +
+    `infer today's date from the transcript, and recompute weekdays and any "days remaining" ` +
+    `from the date above.`;
+  return _temporalText;
+}
+
+function appendTemporalAnchor(body) {
+  if (TEMPORAL.enabled === false) return;
+  const text = temporalAnchorText();
+  if (typeof body.system === 'string') {
+    if (!body.system.includes(TEMPORAL_MARK)) body.system += text;
+  } else if (Array.isArray(body.system)) {
+    const last = body.system.findLast(b => typeof b?.text === 'string');
+    if (last && !last.text.includes(TEMPORAL_MARK)) last.text += text;
+  } else if (body.system == null) {
+    body.system = text.trim();
+  }
+}
+
+/**
+ * Ultracode fans out far less on DeepSeek than on Anthropic's own models — measured from the
+ * ledger, a real ultracode run issued 147 subagent requests over 35 minutes but never more
+ * than 7 concurrently, and 115 of its dispatch windows contained exactly one. That is a
+ * parent emitting one Task block per turn and looping, not a swarm; Claude emits 20+ blocks
+ * in a single message. Nothing in this shim throttles it — there is no queue, semaphore or
+ * concurrency cap anywhere — so the count is the model's own choice, and the only lever here
+ * is to ask for the behaviour explicitly. DeepSeek follows an explicit parallel-tool
+ * instruction far more reliably than it self-initiates one.
+ *
+ * A constant, appended only on ultracode turns: the flip costs one cache miss when ultracode
+ * first engages, then the prefix is stable again for the rest of the session.
+ */
+const SWARM_HINT =
+  '\n\nPARALLEL DISPATCH: when this turn delegates work, emit ALL independent Task tool ' +
+  'calls as separate tool_use blocks in a SINGLE assistant message — do not send one and ' +
+  'wait for it before sending the next. Independent investigations (different files, ' +
+  'subsystems, or competing hypotheses) must go out together. Chain across turns only when a ' +
+  'task genuinely needs an earlier task\'s result. Prefer many narrow parallel tasks over a ' +
+  'few broad sequential ones.';
+const SWARM_MARK = 'PARALLEL DISPATCH:';
+
+function appendSwarmHint(body) {
+  if (cfg.effort?.ultracodeSwarmHint === false) return;
+  if (typeof body.system === 'string') {
+    if (!body.system.includes(SWARM_MARK)) body.system += SWARM_HINT;
+  } else if (Array.isArray(body.system)) {
+    const last = body.system.findLast(b => typeof b?.text === 'string');
+    if (last && !last.text.includes(SWARM_MARK)) last.text += SWARM_HINT;
+  } else if (body.system == null) {
+    body.system = SWARM_HINT.trim();
+  }
+}
+
+function transformRequest(body, effort, upstreamModel = MODEL, opts = {}) {
+  body.model = upstreamModel;
   appendVisionHint(body);
+  appendTemporalAnchor(body);
+  if (opts.swarm) appendSwarmHint(body);
 
   // DeepSeek isolates the KV cache per metadata.user_id. Leaving it in fragments the cache
   // and forfeits the 50x cache-hit discount, so it is removed after being read for session
@@ -1484,13 +1627,21 @@ async function handleMessages(req, res, rawBody) {
   // transformRequest (so the rewritten flags actually reach DeepSeek).
   environmentSanitizer(body);
 
-  transformRequest(body, effort);
+  // Which of the two real models this request is billed against. Decided here, once, then
+  // carried into both the upstream body and every record() call so the ledger prices the
+  // turn against the model that actually served it.
+  const upstream = pickUpstreamModel(desktopTier, resolved.slot);
+
+  // Only the parent (main slot) decides how wide to fan out; telling a subagent to swarm
+  // would just nest fan-outs inside fan-outs.
+  const swarm = resolved.slot === 'main' && isUltracode(sessionKey);
+  transformRequest(body, effort, upstream.model, { swarm });
 
   const outBody = Buffer.from(JSON.stringify(body));
   const streaming = body.stream === true;
   const started = Date.now();
 
-  vlog(`-> ${resolved.slot}${desktopTier ? ` tier=${desktopTier}` : ''} effort=${effort} (${why}) stream=${streaming} bytes=${outBody.length}${classifierV2 ? ' [classifier]' : ''}`);
+  vlog(`-> ${resolved.slot}${desktopTier ? ` tier=${desktopTier}` : ''} model=${upstream.model} (${upstream.why}) effort=${effort} (${why}) stream=${streaming} bytes=${outBody.length}${classifierV2 ? ' [classifier]' : ''}`);
 
   // Auto-mode's two-stage classifier runs against a hard client-side deadline (60s stage-1
   // budget) and fails CLOSED — a denied tool call, not a retry — when it doesn't get a
@@ -1556,7 +1707,7 @@ async function handleMessages(req, res, rawBody) {
         upRes.on('end', () => {
           try { sanitizer.flush(); } catch {}
           res.end();
-          record(sniff.usage, resolved.slot, effort, why, status, started, streaming);
+          record(sniff.usage, resolved.slot, effort, why, status, started, streaming, null, upstream.model);
         });
         upRes.on('error', () => {
           try { sanitizer.flush(); } catch {}
@@ -1564,7 +1715,7 @@ async function handleMessages(req, res, rawBody) {
           // Tell it plainly instead of just vanishing — see emitStreamError.
           try { emitStreamError(res, 'upstream stream error'); } catch {}
           try { res.end(); } catch {}
-          record(sniff.usage, resolved.slot, effort, why, status, started, streaming);
+          record(sniff.usage, resolved.slot, effort, why, status, started, streaming, null, upstream.model);
         });
         return;
       }
@@ -1579,18 +1730,26 @@ async function handleMessages(req, res, rawBody) {
         if (!ok) {
           out = rewriteError(status, buf);
           log(`upstream ${status}: ${out.slice(0, 400)}`);
+          // Failures are recorded too. Without this the ledger holds successes only, so
+          // "100% status 200" is a tautology rather than evidence of a healthy upstream, and
+          // every 429/503 is invisible to `dsv4f-usage` — leaving the shim's own stdout as
+          // the sole trace of, say, a rate-limited fan-out. A non-2xx carries no usage block,
+          // so this prices from byte sizes; DeepSeek does not bill rejected calls, so that
+          // cost is expected to be noise. The row exists to make the failure countable.
+          record(null, resolved.slot, effort, why, status, started, streaming,
+                 { outBody, respBytes: buf.length }, upstream.model);
         } else {
           try {
             const parsed = JSON.parse(buf);
             responseSanitizer(parsed);
             responseReasoningSanitizer(parsed);
             out = JSON.stringify(parsed);
-            record(parsed.usage || {}, resolved.slot, effort, why, status, started, streaming);
+            record(parsed.usage || {}, resolved.slot, effort, why, status, started, streaming, null, upstream.model);
           } catch {
             // 200 but not JSON (or unparsable) — still billed by upstream. Record a
             // best-effort estimate from the request/response sizes rather than silently
             // treating it as free; see record()'s fallback-estimate handling below.
-            record(null, resolved.slot, effort, why, status, started, streaming, { outBody, respBytes: buf.length });
+            record(null, resolved.slot, effort, why, status, started, streaming, { outBody, respBytes: buf.length }, upstream.model);
           }
         }
         const b = Buffer.from(out);
@@ -1631,7 +1790,7 @@ async function handleMessages(req, res, rawBody) {
  *   bytesHint rather than silently recording the request as free — see callers above.
  * @param {{outBody?: Buffer, respBytes?: number}} [bytesHint]
  */
-function record(usage, slot, effort, why, status, started, streaming, bytesHint) {
+function record(usage, slot, effort, why, status, started, streaming, bytesHint, model = MODEL) {
   const now = new Date();
   let u = usage;
   let estimated = false;
@@ -1643,7 +1802,7 @@ function record(usage, slot, effort, why, status, started, streaming, bytesHint)
     const respBytes = bytesHint?.respBytes ?? 0;
     u = { input_tokens: Math.ceil(reqBytes / 4), output_tokens: Math.ceil(respBytes / 4) };
   }
-  const priced = priceUsage(u, now);
+  const priced = priceUsage(u, now, model);
   const row = {
     ts: now.toISOString(),
     utcHour: now.getUTCHours(),
@@ -1651,7 +1810,7 @@ function record(usage, slot, effort, why, status, started, streaming, bytesHint)
     effort,
     effortWhy: why,
     provider: 'deepseek',
-    model: MODEL,
+    model,
     status,
     streaming,
     durationMs: Date.now() - started,
