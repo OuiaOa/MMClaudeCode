@@ -93,12 +93,21 @@ if (l.vision?.enabled && l.vision.spentUsd > 0) {
   parts.push(`${col}img $${l.vision.spentUsd.toFixed(3)}${vc > 0 ? `/$${vc.toFixed(2)}` : ''}${C.r}`);
 }
 
-// remaining credit
+// remaining credit — red while DeepSeek's peak surcharge is in force, which is when this
+// number drains fastest. The multiplier prints alongside so the red reads as "everything costs
+// 2x right now" rather than an unexplained alarm.
+//
+// Peak state comes from the shim, which derives it from UTC windows using the same
+// peakMultiplier() that prices every request. It therefore cannot disagree with what is
+// actually being charged, and stays correct on a host whose timezone is set wrong.
 const bi = l.balance?.balance_infos?.[0];
 if (bi) {
   const bal = parseFloat(bi.total_balance);
-  const col = l.balance.is_available === false ? C.red : bal < 5 ? C.yel : C.dim;
-  parts.push(`${col}bal ${bal.toFixed(2)} ${bi.currency}${C.r}`);
+  const peak = l.peak?.active === true;
+  const col = (l.balance.is_available === false || peak) ? C.red : bal < 5 ? C.yel : C.dim;
+  // Bold rides on top of the red and both clear at the segment's single trailing reset.
+  const tag = peak ? ` ${C.b}x${l.peak.multiplier}` : '';
+  parts.push(`${col}bal ${bal.toFixed(2)} ${bi.currency}${tag}${C.r}`);
 }
 
 if (!l.todayUsd && !bi) parts.push(`${C.red}shim down${C.r}`);

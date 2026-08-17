@@ -191,6 +191,46 @@ function peakMultiplier(date = new Date()) {
 }
 
 /**
+ * Peak-surcharge state for display. Reports the multiplier in force right now and when it next
+ * changes, plus the windows themselves rendered in the host's own timezone.
+ *
+ * The windows are DeepSeek's, defined in UTC, and `active` is decided by the same
+ * peakMultiplier() that prices every request — so peak detection cannot drift with a machine's
+ * timezone setting, and a host with the wrong timezone still gets billed and coloured
+ * correctly. `localWindows` exists purely so a human reading the statusline can tell when peak
+ * falls in their own day; nothing depends on it.
+ */
+function peakState(date = new Date()) {
+  const ps = cfg.peakSurcharge || {};
+  const windows = ps.utcWindows || [];
+  const mult = peakMultiplier(date);
+  const h = date.getUTCHours();
+
+  let nextChangeUtcHour = null;
+  if (ps.enabled && windows.length) {
+    const active = windows.find(([a, b]) => h >= a && h < b);
+    // Next boundary: the end of the window we are inside, else the start of the next one.
+    nextChangeUtcHour = active
+      ? active[1]
+      : windows.map(([a]) => a).filter(a => a > h).sort((x, y) => x - y)[0]
+        ?? windows.map(([a]) => a).sort((x, y) => x - y)[0];
+  }
+
+  // Render each UTC window in local hours so it is legible to whoever reads the statusline.
+  const offsetH = -date.getTimezoneOffset() / 60;
+  const wrap = (x) => ((x % 24) + 24) % 24;
+  return {
+    enabled: !!ps.enabled,
+    active: mult > 1,
+    multiplier: mult,
+    utcWindows: windows,
+    localWindows: windows.map(([a, b]) => [wrap(a + offsetH), wrap(b + offsetH)]),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    nextChangeUtcHour,
+  };
+}
+
+/**
  * Anthropic semantics: input_tokens EXCLUDES cached reads. If DeepSeek's Anthropic-format
  * response omits the cache fields we cannot know the split, so we record both bounds and
  * enforce the cap on the pessimistic one. `dsv4shim-usage --reconcile` later solves for the
@@ -1503,6 +1543,10 @@ function usageSummary() {
       balanceAvailable: false,
     },
     burn: burnRate(),
+    // Peak-surcharge state, so the statusline shows the multiplier actually being charged
+    // rather than re-deriving it and drifting. Exposed from the same peakMultiplier() that
+    // prices every request.
+    peak: peakState(),
     balance: readJson(BALANCE_FILE, null),
     inputTokens: todayRows.reduce((s, r) => s + (r.inputTokens || 0), 0),
     outputTokens: todayRows.reduce((s, r) => s + (r.outputTokens || 0), 0),

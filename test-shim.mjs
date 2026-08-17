@@ -692,6 +692,26 @@ check('reports request count', u.requests > 0);
 check('reports burn rate', typeof u.burn?.tokensPerMin === 'number');
 check('reports cap', u.capUsd === 5);
 
+// --- peak surcharge state, for the statusline ---------------------------------
+// The statusline colours remaining credit red while the surcharge is charging. It must not
+// re-derive that from its own clock, or it can disagree with what is actually being billed.
+check('reports peak state', u.peak != null && typeof u.peak.active === 'boolean',
+  JSON.stringify(u.peak));
+check('peak multiplier agrees with active flag',
+  u.peak.active === (u.peak.multiplier > 1),
+  JSON.stringify({ active: u.peak.active, multiplier: u.peak.multiplier }));
+check('peak windows are reported in UTC and in local hours',
+  Array.isArray(u.peak.utcWindows) && Array.isArray(u.peak.localWindows) &&
+  u.peak.utcWindows.length === u.peak.localWindows.length,
+  JSON.stringify({ utc: u.peak.utcWindows, local: u.peak.localWindows }));
+check('peak reports the host timezone for display', typeof u.peak.timezone === 'string' && u.peak.timezone.length > 0,
+  String(u.peak.timezone));
+// Local hours are display-only; the decision is UTC, so a machine with a wrong timezone is
+// still billed and coloured correctly. Every local hour must be a valid 0-23 hour.
+check('local window hours are valid clock hours',
+  u.peak.localWindows.every(w => w.every(h => Number.isInteger(h) && h >= 0 && h < 24)),
+  JSON.stringify(u.peak.localWindows));
+
 // ----------------------------------------------------------------- new sub-routines
 
 // --- classifier interceptor ---
