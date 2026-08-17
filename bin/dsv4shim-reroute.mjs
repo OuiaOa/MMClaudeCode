@@ -131,6 +131,27 @@ export function installPortableAssets(configDir, rootDir) {
  *                                 optionally denyListSrc to wire up the PreToolUse hook
  * @returns {{applied: boolean, added: string[], backupPath: string|null}}
  */
+/**
+ * Env keys whose value this tool owns and may therefore refresh in place, and the test for
+ * "this value is still ours". Deliberately narrow: only the model-name keys, and only when the
+ * value present looks like a sentinel we wrote. ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN are
+ * machine-specific and are never rewritten here.
+ */
+const SHIM_OWNED_ENV = new Set([
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
+  'CLAUDE_CODE_BG_CLASSIFIER_MODEL',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
+]);
+
+const isShimSentinel = (v) =>
+  typeof v === 'string' && (/^deepseek-v4-/.test(v) || /^DeepSeek V4 /.test(v));
+
 export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) {
   let live = {};
   let hadExisting = false;
@@ -150,7 +171,18 @@ export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) 
   live.env ??= {};
   const added = [];
   for (const [k, v] of Object.entries(envBlock)) {
-    if (!(k in live.env)) { live.env[k] = v; added.push(k); }
+    if (!(k in live.env)) { live.env[k] = v; added.push(k); continue; }
+    // A key already present is normally left alone, so a deliberate user override survives a
+    // reroute. The exception is a key whose CURRENT value is one of our own sentinels: that is
+    // this tool's value to maintain, not the user's, and refusing to update it is how a machine
+    // rerouted before the per-tier sentinels existed kept pointing every tier at one shared
+    // name — tierOf() then returns null for all of them and the Pro/Flash split silently
+    // collapses onto the main slot, billing Sonnet at Pro's 3x rate. Anything that does not
+    // look like our sentinel is still treated as the user's and never touched.
+    if (SHIM_OWNED_ENV.has(k) && isShimSentinel(live.env[k]) && live.env[k] !== v) {
+      live.env[k] = v;
+      added.push(`${k} (updated)`);
+    }
   }
 
   // assetsRoot and denyListSrc are instructions to THIS function, not settings keys — strip

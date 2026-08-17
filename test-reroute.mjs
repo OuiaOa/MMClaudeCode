@@ -249,5 +249,53 @@ console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicat
     fs.existsSync(path.join(path.dirname(sp), 'agents', 'a.md')));
 }
 
+
+// --- stale shim sentinels are refreshed; user overrides are not -------------------
+// A machine rerouted before the per-tier sentinels existed kept every tier pointing at one
+// shared name. tierOf() then returns null for all of them and the Pro/Flash split collapses
+// onto the main slot — Sonnet silently billing at Pro's 3x rate. Found live on all five
+// machines 2026-08-18, because applyCliReroute() only ever ADDED absent keys.
+{
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'stale-env-'));
+  const sp = path.join(d, 'settings.json');
+  fs.writeFileSync(sp, JSON.stringify({
+    env: {
+      ANTHROPIC_MODEL: 'deepseek-v4-flash',              // stale sentinel -> must refresh
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash',
+      ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'DeepSeek V4 Flash 0731',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999',       // machine-specific -> never touched
+      ANTHROPIC_AUTH_TOKEN: 'user-token',
+    },
+  }, null, 2));
+
+  const env = buildRerouteEnv({ port: 8788, sentinel: 'SENT' });
+  applyCliReroute(sp, env, path.join(d, 'bak'));
+  const after = JSON.parse(fs.readFileSync(sp, 'utf8')).env;
+
+  check('a stale tier sentinel is refreshed, not left behind',
+    after.ANTHROPIC_DEFAULT_SONNET_MODEL === 'deepseek-v4-sonnet', after.ANTHROPIC_DEFAULT_SONNET_MODEL);
+  check('opus and sonnet end up distinguishable',
+    after.ANTHROPIC_DEFAULT_OPUS_MODEL !== after.ANTHROPIC_DEFAULT_SONNET_MODEL,
+    `${after.ANTHROPIC_DEFAULT_OPUS_MODEL} vs ${after.ANTHROPIC_DEFAULT_SONNET_MODEL}`);
+  check('the display name is refreshed too',
+    after.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === 'DeepSeek V4 Pro / Flash',
+    after.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME);
+  check('an existing base URL is never rewritten',
+    after.ANTHROPIC_BASE_URL === 'http://127.0.0.1:9999', after.ANTHROPIC_BASE_URL);
+  check('an existing auth token is never rewritten',
+    after.ANTHROPIC_AUTH_TOKEN === 'user-token', after.ANTHROPIC_AUTH_TOKEN);
+}
+
+// A value that is NOT one of our sentinels is the user's deliberate choice and stays put.
+{
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'user-env-'));
+  const sp = path.join(d, 'settings.json');
+  fs.writeFileSync(sp, JSON.stringify({ env: { ANTHROPIC_MODEL: 'my-own-model' } }, null, 2));
+  applyCliReroute(sp, buildRerouteEnv({ port: 1, sentinel: 's' }), path.join(d, 'bak'));
+  const after = JSON.parse(fs.readFileSync(sp, 'utf8')).env;
+  check('a user-chosen model is never overwritten by a reroute',
+    after.ANTHROPIC_MODEL === 'my-own-model', after.ANTHROPIC_MODEL);
+}
+
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
 process.exit(fail > 0 ? 1 : 0);
