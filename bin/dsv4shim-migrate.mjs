@@ -146,7 +146,15 @@ for (const settings of [
   try {
     JSON.parse(text);                       // refuse to touch a file that is already broken
     fs.copyFileSync(settings, settings + '.pre-dsv4shim.bak');
-    const out = text.replaceAll('CLAUDE_DSV4F', 'DSV4SHIM').replaceAll('claude-dsv4f', 'dsv4shim');
+    // Order matters. The first two fix DIRECTORY names; the third fixes BINARY names, which
+    // the directory rules miss entirely — `.../claude-dsv4f/bin/dsv4f-statusline.mjs` becomes
+    // `.../dsv4shim/bin/dsv4f-statusline.mjs`, a path that no longer exists, and the statusline
+    // silently stops rendering. `dsv4f-` cannot re-match a string already rewritten to
+    // `dsv4shim-`, so this is safe to run twice.
+    const out = text
+      .replaceAll('CLAUDE_DSV4F', 'DSV4SHIM')
+      .replaceAll('claude-dsv4f', 'dsv4shim')
+      .replaceAll('dsv4f-', 'dsv4shim-');
     JSON.parse(out);                        // and refuse to write one we just broke
     fs.writeFileSync(settings, out);
     moved++;
