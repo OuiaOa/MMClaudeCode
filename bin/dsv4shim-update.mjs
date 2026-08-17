@@ -24,7 +24,11 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, chm
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 
-const REPO_URL = 'https://github.com/OuiaOa/dsv4shim.git';
+// Deliberately still `claude-dsv4f`: the PROJECT was renamed to DSv4Shim, the GitHub
+// repository was not. The blanket rename rewrote this to OuiaOa/dsv4shim, which 404s and
+// would have broken self-update on every machine at once. If the repo is ever renamed on
+// GitHub, this keeps working untouched — GitHub redirects the old path to the new one.
+const REPO_URL = 'https://github.com/OuiaOa/claude-dsv4f.git';
 const DATA = process.env.DSV4SHIM_DATA_DIR || join(homedir(), '.local', 'share', 'dsv4shim');
 const CONFIG = process.env.DSV4SHIM_CONFIG_DIR || join(homedir(), '.config', 'dsv4shim');
 const CACHE = join(DATA, '.update-cache');

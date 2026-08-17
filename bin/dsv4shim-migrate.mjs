@@ -7,7 +7,20 @@
  * sight of its stored key, sentinel, usage ledger, daily cap and vision cache — the files are
  * still on disk under the old names, but nothing looks there.
  *
- * Run it BEFORE or immediately after updating a machine's code, then restart the shim.
+ * ORDER MATTERS, and it is UPDATE FIRST, then migrate, then restart:
+ *
+ *   1. run the OLD `dsv4f-update.mjs` (still present, still pointing at the same repo)
+ *   2. run THIS script
+ *   3. restart the shim
+ *
+ * Because this moves the install directory itself, the new code has to be inside it before it
+ * moves. Migrating first leaves the OLD code sitting in the NEW directory, still looking for
+ * `~/.config/claude-dsv4f` — which this script just moved out from under it. Either order has
+ * a brief broken window, which is inherent to a clean break; this is the order where the
+ * window closes by itself at step 2 rather than needing a manual fix.
+ *
+ * Step 1 leaves the old `dsv4f-*` files behind next to the new `dsv4shim-*` ones. That is
+ * harmless clutter — the updater copies tracked files in and does not prune removed ones.
  *
  * What moves:
  *   ~/.config/claude-dsv4f        -> ~/.config/dsv4shim         (key, sentinel, config, cap)
