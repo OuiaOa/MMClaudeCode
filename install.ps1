@@ -125,6 +125,9 @@ if ($src -ne $dest -or $Update) {
     # Skills (Claude Code Skills) -- auto-discovered under the dsv4f profile. Copy
     # the whole skills/ tree so user-level skills install alongside the binary.
     if (Test-Path (Join-Path $src "skills")) { Copy-Item (Join-Path $src "skills") $dest -Recurse -Force }
+    # Agents (Claude Code subagents) -- one .md per agent, discovered under the profile's
+    # agents/ dir. See agents/README.md for provenance.
+    if (Test-Path (Join-Path $src "agents")) { Copy-Item (Join-Path $src "agents") $dest -Recurse -Force }
 }
 
 # ------------------------------------------ Optional: bundle Claude Code

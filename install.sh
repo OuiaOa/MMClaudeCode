@@ -99,6 +99,10 @@ if [[ "$SRC" != "$DEST" || "$UPDATE" -eq 1 ]]; then
   # $CLAUDE_CONFIG_DIR/skills. Copy the whole tree so user-level skills install
   # alongside the binary.
   [[ -d "$SRC/skills" ]] && cp -r "$SRC/skills" "$DEST/" || true
+  # Agents (Claude Code subagents) ship the same way: one .md per agent, discovered under
+  # $CLAUDE_CONFIG_DIR/agents. See agents/README.md for what each one is and where the
+  # definitions were adapted from.
+  [[ -d "$SRC/agents" ]] && cp -r "$SRC/agents" "$DEST/" || true
 fi
 chmod +x "$DEST"/bin/* 2>/dev/null || true
 
