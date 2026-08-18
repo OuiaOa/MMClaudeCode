@@ -29,18 +29,20 @@ export function buildRerouteEnv({ port, sentinel }) {
   return {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     ANTHROPIC_AUTH_TOKEN: sentinel,
-    // Per-tier sentinels, not one shared name. The shim maps each back to its logical tier
-    // (config `tierSentinels`) and routes opus/fable to V4 Pro while sonnet stays on the ~3x
-    // cheaper V4 Flash. Pointing all three at a single sentinel — correct while there was only
-    // one upstream model — makes every tier arrive indistinguishable and collapses the split.
-    ANTHROPIC_MODEL: 'deepseek-v4-opus',
-    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-opus',
-    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-sonnet',
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash-bg',
-    ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-v4-flash-bg',
+    // Profile names, not opaque sentinels. The model picker displays these raw, so each one
+    // states the real model AND its thinking level — that is the only way to tell from the menu
+    // what an entry actually connects to. No ANTHROPIC_CUSTOM_MODEL_OPTION: it added a sixth,
+    // duplicate entry to a menu that already lists every tier.
+    ANTHROPIC_MODEL: 'deepseek-v4-pro-medium',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro-high',
+    ANTHROPIC_DEFAULT_FABLE_MODEL: 'deepseek-v4-pro-max',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash-max',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash-high',
+    // Whatever Claude Code routes background work to on its own — older Haiku generations,
+    // titles, compaction. Cheapest model, lowest thinking that still thinks.
+    ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-v4-flash-low',
+    CLAUDE_CODE_BG_CLASSIFIER_MODEL: 'deepseek-v4-flash-low',
     CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-v4-flash-sub',
-    ANTHROPIC_CUSTOM_MODEL_OPTION: 'deepseek-v4-opus',
-    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'DeepSeek V4 Pro / Flash',
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
     CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: '1',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -48,7 +50,6 @@ export function buildRerouteEnv({ port, sentinel }) {
     CLAUDE_CODE_DISABLE_FAST_MODE: '1',
     CLAUDE_CODE_TWO_STAGE_CLASSIFIER: '0',
     CLAUDE_CODE_SKIP_FAST_MODE_NETWORK_ERRORS: '1',
-    CLAUDE_CODE_BG_CLASSIFIER_MODEL: 'deepseek-v4-flash-bg',
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: '384000',
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '600000',

@@ -260,7 +260,7 @@ async function send(body, { sentinel = SENTINEL } = {}) {
 }
 
 const msg = (extra = {}, text = 'hi') => ({
-  model: 'deepseek-v4-flash', max_tokens: 100,
+  model: 'deepseek-v4-pro-medium', max_tokens: 100,
   messages: [{ role: 'user', content: text }], ...extra,
 });
 
@@ -268,7 +268,7 @@ console.log('\n\x1b[1mdsv4shim shim tests\x1b[0m\n');
 console.log('\x1b[1meffort translation\x1b[0m');
 
 let r = await send(msg());
-check('main slot defaults to high', r.last?.body?.output_config?.effort === 'high', JSON.stringify(r.last?.body?.output_config));
+check('default profile is pro at medium', r.last?.body?.output_config?.effort === 'medium', JSON.stringify(r.last?.body?.output_config));
 
 r = await send(msg({ output_config: { effort: 'xhigh' } }));
 check('ULTRACODE: xhigh -> max', r.last?.body?.output_config?.effort === 'max', JSON.stringify(r.last?.body?.output_config));
@@ -281,14 +281,15 @@ check('medium -> medium (real upstream level)', r.last?.body?.output_config?.eff
 r = await send(msg({ output_config: { effort: 'low' } }));
 check('low -> low', r.last?.body?.output_config?.effort === 'low');
 
-// There is NO `none` in the upstream effort enum — sending it returns 400. Thinking must be
-// switched off with thinking:{type:"disabled"} and the effort field omitted entirely.
-r = await send({ ...msg(), model: 'deepseek-v4-flash-bg' });
-check('background slot disables thinking', r.last?.body?.thinking?.type === 'disabled',
-  JSON.stringify(r.last?.body?.thinking));
-check('background slot sends NO effort field (none would 400)',
-  r.last?.body?.output_config === undefined && r.last?.body?.reasoning === undefined,
-  JSON.stringify(r.last?.body?.output_config));
+// Background now thinks a little rather than not at all — 'low' by explicit request. `none` is
+// still not a real upstream level (it 400s); it is encoded as thinking:{type:"disabled"}, which
+// is what this path used to send.
+r = await send({ ...msg(), model: 'deepseek-v4-flash-low' });
+check('background profile runs on flash', r.last?.body?.model === 'deepseek-v4-flash',
+  String(r.last?.body?.model));
+check('background profile thinks at low, not disabled',
+  r.last?.body?.output_config?.effort === 'low' && r.last?.body?.thinking === undefined,
+  JSON.stringify({ effort: r.last?.body?.output_config, thinking: r.last?.body?.thinking }));
 
 r = await send({ ...msg(), model: 'deepseek-v4-flash-sub' });
 check('subagent slot -> high', r.last?.body?.output_config?.effort === 'high',
@@ -329,15 +330,15 @@ check('ultrathink overrides a pinned low -> max', r.last?.body?.output_config?.e
   JSON.stringify(r.last?.body?.output_config));
 
 r = await send(msg({}, 'ok thanks'));
-check('short simple turn stays high', r.last?.body?.output_config?.effort === 'high');
+check('short simple turn stays at the profile default', r.last?.body?.output_config?.effort === 'medium');
 
 console.log('\n\x1b[1mmodel allowlist\x1b[0m');
 // V4 Pro is now a ROUTED model, not a denied one: it backs the main slot and the
 // opus/fable tiers (upstreamModels in config.default.json). Asking for it by name lands on
 // the main slot via `sentinels` rather than being refused.
-r = await send({ ...msg(), model: 'deepseek-v4-pro' });
-check('deepseek-v4-pro is served, not refused', r.status === 200, `status=${r.status}`);
-check('deepseek-v4-pro reaches upstream as itself', r.last?.body?.model === 'deepseek-v4-pro',
+r = await send({ ...msg(), model: 'deepseek-v4-pro-high' });
+check('a pro profile is served', r.status === 200, `status=${r.status}`);
+check('a pro profile reaches upstream as the REAL model', r.last?.body?.model === 'deepseek-v4-pro',
   String(r.last?.body?.model));
 
 // The deny list still exists — it just no longer covers V4 Pro. Models the profile was never
@@ -410,7 +411,7 @@ check('cost priced correctly', Math.abs(streamRow.costUsd - expected) < 1e-9,
 // undercounted-spend gap in the daily cap). The shim must record a best-effort estimate
 // instead of treating it as free.
 const nonJsonReq = {
-  model: 'deepseek-v4-flash', max_tokens: 100,
+  model: 'deepseek-v4-pro-medium', max_tokens: 100,
   system: 'NON_JSON_200_MARKER', messages: [{ role: 'user', content: 'hi' }],
 };
 const nonJsonResp = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
@@ -430,7 +431,7 @@ check('non-JSON 200 is recorded (not silently free)', nonJsonRow?.estimated === 
 // — invisible both to the client's stream parser and to the spend ledger. The shim must
 // emit a terminal SSE error event and record whatever usage was sniffed before the cut.
 const cutoffReq = {
-  model: 'deepseek-v4-flash', max_tokens: 100, stream: true,
+  model: 'deepseek-v4-pro-medium', max_tokens: 100, stream: true,
   system: 'MID_STREAM_CUTOFF_MARKER', messages: [{ role: 'user', content: 'hi' }],
 };
 const cutoffResp = await fetch(`http://127.0.0.1:${SHIM_PORT}/v1/messages`, {
@@ -481,7 +482,7 @@ for (const p of ['/v1/messages/', '/v1/messages/batches', '/v1/complete']) {
 console.log('\n\x1b[1mvision routing\x1b[0m');
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const imgMsg = (data = PNG) => ({
-  model: 'deepseek-v4-flash', max_tokens: 100,
+  model: 'deepseek-v4-pro-medium', max_tokens: 100,
   messages: [{ role: 'user', content: [
     { type: 'text', text: 'why is this button broken?' },
     { type: 'image', source: { type: 'base64', media_type: 'image/png', data } },
@@ -511,7 +512,7 @@ check('a different image does trigger a new vision call', visionCalls === callsB
 // not at the top level of msg.content. Missing this depth lets images reach DeepSeek untouched.
 const callsBeforeNested = visionCalls;
 r = await send({
-  model: 'deepseek-v4-flash', max_tokens: 100,
+  model: 'deepseek-v4-pro-medium', max_tokens: 100,
   messages: [
     { role: 'user', content: [{ type: 'text', text: 'look at this' }] },
     { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/x.png' } }] },
@@ -555,7 +556,7 @@ visionMock.on('request', (req, res) => {
 });
 
 const focusImg = (data, saidBefore) => ({
-  model: 'deepseek-v4-flash', max_tokens: 100,
+  model: 'deepseek-v4-pro-medium', max_tokens: 100,
   messages: [
     { role: 'assistant', content: [
       { type: 'text', text: saidBefore },
@@ -776,7 +777,7 @@ check('a real turn whose HISTORY mentions classify_result/shouldBlock as text is
 // retry transparently and the client must see a normal 200, not an error.
 const retryBefore = seen.length;
 const retryReq = {
-  model: 'deepseek-v4-flash', max_tokens: 100,
+  model: 'deepseek-v4-pro-medium', max_tokens: 100,
   system: 'permission classifier decision RETRY_TEST_MARKER',
   messages: [{ role: 'user', content: 'rm -rf /tmp/x' }],
 };
@@ -792,7 +793,7 @@ check('classifier V2: exactly 3 upstream attempts were made (2 failures + 1 succ
 // --- classifier V2: full retry exhaustion (widened 2026-08-13 from 3 to 5 attempts) ---
 const exhaustBefore = seen.length;
 const exhaustReq = {
-  model: 'deepseek-v4-flash', max_tokens: 100,
+  model: 'deepseek-v4-pro-medium', max_tokens: 100,
   system: 'permission classifier decision EXHAUST_TEST_MARKER',
   messages: [{ role: 'user', content: 'rm -rf /tmp/y' }],
 };
@@ -866,8 +867,10 @@ check('model mapper: claude-3-5-haiku forwarded as deepseek-* to upstream',
 // effort:none. That is a ~25-50x cost inflation for traffic that never needed to think at
 // all. Correct behavior: mapped requests carry thinking:disabled (the shim's effort:none
 // encoding), proving they landed on the background slot.
-check('model mapper: haiku traffic lands on background slot (effort:none), not main:high',
-  seen[seen.length - 1].body.thinking?.type === 'disabled');
+check('model mapper: old haiku traffic lands on the cheap background profile, not main',
+  seen[seen.length - 1].body.model === 'deepseek-v4-flash' &&
+  seen[seen.length - 1].body.output_config?.effort === 'low',
+  JSON.stringify({ model: seen[seen.length - 1].body.model, effort: seen[seen.length - 1].body.output_config }));
 
 // Allowlist design (2026-08-13): current flagships -> main; EVERYTHING else Anthropic-shaped
 // (any Haiku generation, any non-current Sonnet/Opus/Fable generation, any future unlisted
@@ -891,15 +894,18 @@ check('model mapper: current flagship (sonnet-5) -> main, tier default max', r.l
 
 r = await send({ ...msg(), model: 'claude-3-5-sonnet-20241022' });
 check('model mapper: non-current sonnet (3-5) -> background, NOT main (was the old behavior)',
-  r.last?.body?.thinking?.type === 'disabled', JSON.stringify(r.last?.body?.thinking));
+  r.last?.body?.model === 'deepseek-v4-flash' && r.last?.body?.output_config?.effort === 'low',
+  JSON.stringify({ model: r.last?.body?.model, effort: r.last?.body?.output_config }));
 
 r = await send({ ...msg(), model: 'claude-3-opus-20240229' });
 check('model mapper: non-current opus (3) -> background, NOT main (was the old behavior)',
-  r.last?.body?.thinking?.type === 'disabled', JSON.stringify(r.last?.body?.thinking));
+  r.last?.body?.model === 'deepseek-v4-flash' && r.last?.body?.output_config?.effort === 'low',
+  JSON.stringify({ model: r.last?.body?.model, effort: r.last?.body?.output_config }));
 
 r = await send({ ...msg(), model: 'claude-sonnet-9-hypothetical-future-model' });
 check('model mapper: unlisted future generation defaults safely to background, not main',
-  r.last?.body?.thinking?.type === 'disabled', JSON.stringify(r.last?.body?.thinking));
+  r.last?.body?.model === 'deepseek-v4-flash' && r.last?.body?.output_config?.effort === 'low',
+  JSON.stringify({ model: r.last?.body?.model, effort: r.last?.body?.output_config }));
 
 // --- response sanitizer (Bash tool_use with is_background: true) ---
 // The mock upstream returns a Bash tool_use block with is_background: true when the user
@@ -996,8 +1002,9 @@ check('Sonnet tier with no client effort -> max',
   r.last?.body?.output_config?.effort === 'max', JSON.stringify(r.last?.body?.output_config));
 
 r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.haiku ?? 'claude-haiku-4-5-20251001' });
-check('Haiku tier with no client effort -> thinking disabled (effort:none), same as background slot',
-  r.last?.body?.thinking?.type === 'disabled', JSON.stringify(r.last?.body?.thinking));
+check('Haiku tier -> flash at high (a deliberate pick, unlike background traffic)',
+  r.last?.body?.model === 'deepseek-v4-flash' && r.last?.body?.output_config?.effort === 'high',
+  JSON.stringify({ model: r.last?.body?.model, effort: r.last?.body?.output_config }));
 
 // A client-specified effort always overrides the tier default, for any tier.
 r = await send({ ...msg(), model: cfg.desktop?.tierModelIds?.opus ?? 'claude-opus-5', output_config: { effort: 'low' } });
@@ -1043,34 +1050,36 @@ check('Opus tier: explicit client effort (low) overrides the tier default (high)
 console.log('\n\x1b[1mCLI tier sentinels\x1b[0m');
 {
   const cases = [
-    ['deepseek-v4-opus',   'deepseek-v4-pro',   'high'],
-    ['deepseek-v4-fable',  'deepseek-v4-pro',   'max'],
-    ['deepseek-v4-sonnet', 'deepseek-v4-flash', 'max'],
+    ['deepseek-v4-pro-medium', 'deepseek-v4-pro',   'medium'],
+    ['deepseek-v4-pro-high',   'deepseek-v4-pro',   'high'],
+    ['deepseek-v4-pro-max',    'deepseek-v4-pro',   'max'],
+    ['deepseek-v4-flash-max',  'deepseek-v4-flash', 'max'],
+    ['deepseek-v4-flash-high', 'deepseek-v4-flash', 'high'],
+    ['deepseek-v4-flash-low',  'deepseek-v4-flash', 'low'],
   ];
-  for (const [sentinel, wantModel, wantEffort] of cases) {
-    const rr = await send({ ...msg(), model: sentinel });
-    check(`${sentinel} -> ${wantModel} @ ${wantEffort}`,
+  for (const [profile, wantModel, wantEffort] of cases) {
+    const rr = await send({ ...msg(), model: profile });
+    check(`${profile} -> ${wantModel} @ ${wantEffort}`,
       rr.last?.body?.model === wantModel && rr.last?.body?.output_config?.effort === wantEffort,
       JSON.stringify({ model: rr.last?.body?.model, effort: rr.last?.body?.output_config?.effort }));
   }
 
-  // The background sentinel must NOT pick up a tier: it is compaction/title/classifier
-  // traffic, and giving it a reasoning budget is what caused the ~25-50x background-cost bug.
-  const bg = await send({ ...msg(), model: 'deepseek-v4-flash-bg' });
-  check('background sentinel stays on flash with thinking disabled',
-    bg.last?.body?.model === 'deepseek-v4-flash' && bg.last?.body?.thinking?.type === 'disabled',
-    JSON.stringify({ model: bg.last?.body?.model, thinking: bg.last?.body?.thinking }));
+  // The profile NAME states the real model and effort. That is the whole point: the model
+  // picker renders it raw, so an opaque sentinel leaves no way to tell what an entry connects
+  // to. Guard the naming, or the next rename quietly makes the menu meaningless again.
+  for (const [profile, wantModel, wantEffort] of cases) {
+    check(`${profile} names its own model and effort`,
+      profile.startsWith(wantModel) && profile.endsWith(wantEffort),
+      profile);
+  }
 
-  // Subagents run on the cheap model on purpose: ultracode promotes them to max effort and
-  // fans out, so this is the slot where a 3x price difference compounds hardest.
   const sub = await send({ ...msg(), model: 'deepseek-v4-flash-sub' });
-  check('subagent slot runs on flash', sub.last?.body?.model === 'deepseek-v4-flash',
+  check('subagent profile runs on flash', sub.last?.body?.model === 'deepseek-v4-flash',
     String(sub.last?.body?.model));
 
-  // A deliberately chosen level still beats the tier default (autoLevel means "no preference",
-  // anything else is a real choice).
-  const pinned = await send({ ...msg(), model: 'deepseek-v4-fable', output_config: { effort: 'low' } });
-  check('explicit effort still overrides a tier default on the CLI path',
+  // A deliberately chosen level still beats the profile default.
+  const pinned = await send({ ...msg(), model: 'deepseek-v4-pro-max', output_config: { effort: 'low' } });
+  check('explicit effort still overrides a profile default',
     pinned.last?.body?.output_config?.effort === 'low',
     JSON.stringify(pinned.last?.body?.output_config));
 }
@@ -1169,7 +1178,7 @@ console.log('\n\x1b[1mconcurrency: isolated simultaneous streams\x1b[0m');
 
 {
   const streamReq = (marker) => ({
-    model: 'deepseek-v4-flash', max_tokens: 100, stream: true,
+    model: 'deepseek-v4-pro-medium', max_tokens: 100, stream: true,
     messages: [{ role: 'user', content: marker }],
   });
   const fetchStream = async (marker) => {

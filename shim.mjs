@@ -165,7 +165,7 @@ function rollDayIfNeeded() {
  * Rates are keyed by the REAL upstream model. With two models in play that is no longer
  * always `MODEL`: one session mixes a v4-pro main turn with v4-flash subagent and background
  * turns, priced 3x apart. Callers pass the model the request was actually billed against —
- * pickUpstreamModel()'s result, carried through record().
+ * the resolved profile's model, carried through record().
  *
  * An unconfigured model returns zeros rather than throwing, so the proxy keeps serving; that
  * spend records as $0 and does not restrain the cap, which is why the miss is logged once.
@@ -435,10 +435,21 @@ function modelMapper(body, cfg) {
   if (!body || typeof body !== 'object') return null;
   const m = String(body.model || '');
   if (!/^claude-/i.test(m)) return null; // not Anthropic-shaped — nothing to map
+
+  // A current flagship maps to ITS OWN tier profile, not to one shared main profile. Mapping
+  // every flagship to `cfg.model` is what made opus, sonnet and fable indistinguishable by the
+  // time resolveModel() saw them — the tier was destroyed here, one line before it was needed.
+  const tier = tierOf(m);
+  const viaTier = tier && cfg.desktop?.tierProfiles?.[tier];
+  if (viaTier && cfg.modelProfiles?.[viaTier]) {
+    body.model = viaTier;
+    return { mapped: `${m} -> ${viaTier} (tier:${tier})` };
+  }
   if (CURRENT_MAIN_MODELS.some(re => re.test(m))) {
     body.model = cfg.model;
-    return { mapped: m + ' -> ' + body.model + ' (current flagship -> main)' };
+    return { mapped: m + ' -> ' + body.model + ' (current flagship -> default profile)' };
   }
+  // Older or unrecognised generations are what Claude Code routes background work to.
   body.model = cfg.fastModel || cfg.model;
   return { mapped: m + ' -> ' + body.model + ' (non-current -> background)' };
 }
@@ -450,7 +461,7 @@ function modelMapper(body, cfg) {
  * transformRequest() unconditionally force-sets body.model = MODEL right before the upstream
  * call regardless of which tier or slot the request resolved to. These constants are
  * fallbacks only: a config.json predating this feature has neither `desktop.tierModelIds` nor
- * `effort.tierDefaults`, and existing installs must keep working without regenerating config —
+ * `desktop.tierProfiles`, and existing installs must keep working without regenerating config —
  * see resolveTierModelIds()/tierOf()/decideEffort() for where the config value, when present,
  * takes precedence over these.
  */
@@ -460,7 +471,6 @@ const DEFAULT_TIER_MODEL_IDS = {
   fable: 'claude-fable-5',
   haiku: 'claude-haiku-4-5-20251001',
 };
-const DEFAULT_TIER_REASONING_DEFAULTS = { fable: 'max', opus: 'high', sonnet: 'max', haiku: 'low' };
 
 function resolveTierModelIds() {
   return { ...DEFAULT_TIER_MODEL_IDS, ...(cfg.desktop?.tierModelIds || {}) };
@@ -488,36 +498,7 @@ function tierOf(model) {
   return null;
 }
 
-/**
- * The real model name sent upstream and billed, as distinct from `MODEL`/`cfg.fastModel`,
- * which are routing sentinels naming a slot. Two models are now in play (V4 Pro for the
- * capable tiers, V4 Flash for the cheap ones), so this is the single place that decides
- * which one a request costs.
- *
- * Tier outranks slot. Claude Code and Desktop both send a Claude-looking per-tier ID
- * (claude-opus-5, claude-sonnet-5, …) that tierOf() reads BEFORE modelMapper() collapses it
- * to a slot sentinel; without the tier rule opus, sonnet and fable would share slot 'main'
- * and could not be split across two models at all. Slot still decides everything tierless —
- * notably CLI background traffic, which carries the bare sentinel and must stay on Flash.
- *
- * Falls back through slot then `default`, so a config predating `upstreamModels` (or one
- * naming a tier/slot this build doesn't know) still resolves to a real model instead of
- * sending a sentinel upstream as if it were one.
- */
-const DEFAULT_UPSTREAM_MODELS = {
-  default: 'deepseek-v4-pro',
-  tiers: { opus: 'deepseek-v4-pro', fable: 'deepseek-v4-pro', sonnet: 'deepseek-v4-flash', haiku: 'deepseek-v4-flash' },
-  slots: { main: 'deepseek-v4-pro', subagent: 'deepseek-v4-flash', background: 'deepseek-v4-flash' },
-};
 
-function pickUpstreamModel(tier, slot) {
-  const um = cfg.upstreamModels || {};
-  const tiers = { ...DEFAULT_UPSTREAM_MODELS.tiers, ...(um.tiers || {}) };
-  const slots = { ...DEFAULT_UPSTREAM_MODELS.slots, ...(um.slots || {}) };
-  const model = (tier && tiers[tier]) || slots[slot] || um.default || DEFAULT_UPSTREAM_MODELS.default;
-  const why = (tier && tiers[tier]) ? `tier:${tier}` : (slots[slot] ? `slot:${slot}` : 'default');
-  return { model, why };
-}
 
 // ----------------------------------------- response sanitizers
 
@@ -728,15 +709,40 @@ function totalToolResultChars(body) {
   return n;
 }
 
+function profileFor(name) {
+  const p = cfg.modelProfiles?.[String(name || '')];
+  return (p && typeof p === 'object' && p.model) ? p : null;
+}
+
+/**
+ * Resolve a requested model name to its profile: the real upstream model, the default thinking
+ * level for that choice, and the ledger slot.
+ *
+ * One table does this now. It previously took three that had to agree with each other
+ * (`sentinels` for the slot, `upstreamModels` for the model, `effort.tierDefaults` for the
+ * effort) — and when they silently disagreed, every tier collapsed onto one model and Sonnet
+ * billed at Pro's rate without anything looking wrong.
+ */
 function resolveModel(requested) {
   const m = String(requested || '');
   for (const pat of cfg.denyModelPatterns || []) {
     if (m.includes(pat)) return { deny: pat };
   }
-  const slot = (cfg.modelSlots || cfg.sentinels)?.[m];   // `sentinels` was the old key name
-  if (slot) return { model: MODEL, slot };
-  if (/^claude/i.test(m)) return { model: MODEL, slot: 'main', warn: `unmapped Claude model "${m}" -> ${MODEL}` };
-  return { model: MODEL, slot: 'main', warn: `unknown model "${m}" -> ${MODEL}` };
+  const direct = profileFor(m);
+  if (direct) return { model: direct.model, slot: direct.slot || 'main', effort: direct.effort || null, profile: m };
+
+  // Desktop/Cowork send a Claude-looking ID rather than a profile name.
+  const tier = tierOf(m);
+  const viaTier = tier && profileFor(cfg.desktop?.tierProfiles?.[tier]);
+  if (viaTier) {
+    return { model: viaTier.model, slot: viaTier.slot || 'main', effort: viaTier.effort || null,
+             profile: cfg.desktop.tierProfiles[tier] };
+  }
+
+  const fb = profileFor(cfg.fastModel) || profileFor(cfg.model);
+  const fbName = profileFor(cfg.fastModel) ? cfg.fastModel : cfg.model;
+  return { model: fb?.model || MODEL, slot: fb?.slot || 'main', effort: fb?.effort || null,
+           profile: fbName, warn: `unknown model "${m}" -> ${fbName}` };
 }
 
 /**
@@ -761,7 +767,7 @@ function isUltracode(key) {
   return true;
 }
 
-function decideEffort(body, slot, sessionKey, isClassifierV2 = false, tier = null) {
+function decideEffort(body, slot, sessionKey, isClassifierV2 = false, profileEffort = null) {
   const E = cfg.effort;
 
   // CONFIRMED LIVE BUG, fixed 2026-08-13: the comment below ("classifiers never need to
@@ -791,12 +797,13 @@ function decideEffort(body, slot, sessionKey, isClassifierV2 = false, tier = nul
 
   if (String(incomingRaw).toLowerCase() === 'xhigh' || translated === 'max') markUltracode(sessionKey);
 
-  // Background traffic (titles, summaries, classifiers) never needs to think.
-  if (slot === 'background') return { effort: 'none', why: 'slot:background' };
+  // Background traffic (titles, summaries, classifiers). Its level comes from the profile —
+  // 'low' by explicit request, where this used to hard-return 'none'.
+  if (slot === 'background') return { effort: profileEffort || E.slotDefaults.background || 'low', why: 'slot:background' };
 
   if (slot === 'subagent') {
     if (E.ultracodePromotesSubagents && isUltracode(sessionKey)) return { effort: 'max', why: 'ultracode:subagent' };
-    return { effort: translated || E.slotDefaults.subagent, why: translated ? 'client' : 'slot:subagent' };
+    return { effort: translated || profileEffort || E.slotDefaults.subagent, why: translated ? 'client' : (profileEffort ? 'profile' : 'slot:subagent') };
   }
 
   // main slot
@@ -811,11 +818,10 @@ function decideEffort(body, slot, sessionKey, isClassifierV2 = false, tier = nul
   // which is where nearly all traffic is. Only a level differing from autoLevel is a real
   // choice, and that still outranks the tier.
   const AUTO_LEVEL = E.autoLevel || 'high';
-  const tierDefault = tier ? (E.tierDefaults?.[tier] ?? DEFAULT_TIER_REASONING_DEFAULTS[tier]) : null;
   const clientChose = translated && translated !== AUTO_LEVEL;
-  let effort = clientChose ? translated : (tierDefault || translated || E.slotDefaults.main);
+  let effort = clientChose ? translated : (profileEffort || translated || E.slotDefaults.main);
   let why = clientChose ? 'client'
-    : (tierDefault ? `tier:${tier}` : (translated ? 'client:auto' : 'slot:main'));
+    : (profileEffort ? 'profile' : (translated ? 'client:auto' : 'slot:main'));
 
   if (effort === 'none') return { effort, why };
 
@@ -1658,7 +1664,7 @@ async function handleMessages(req, res, rawBody) {
   // Effort is decided BEFORE images are substituted. Afterwards the "last user text" is the
   // vision model's exhaustive description, which would drive the heuristic and silently
   // escalate every screenshot turn to max effort.
-  const { effort, why } = decideEffort(body, resolved.slot, sessionKey, classifierV2, desktopTier);
+  const { effort, why } = decideEffort(body, resolved.slot, sessionKey, classifierV2, resolved.effort);
 
   const vis = await substituteImages(body);
   if (vis.images) {
@@ -1671,10 +1677,8 @@ async function handleMessages(req, res, rawBody) {
   // transformRequest (so the rewritten flags actually reach DeepSeek).
   environmentSanitizer(body);
 
-  // Which of the two real models this request is billed against. Decided here, once, then
-  // carried into both the upstream body and every record() call so the ledger prices the
-  // turn against the model that actually served it.
-  const upstream = pickUpstreamModel(desktopTier, resolved.slot);
+  // The real model this request is billed against, straight off the resolved profile.
+  const upstream = { model: resolved.model, why: `profile:${resolved.profile}` };
 
   // Only the parent (main slot) decides how wide to fan out; telling a subagent to swarm
   // would just nest fan-outs inside fan-outs.

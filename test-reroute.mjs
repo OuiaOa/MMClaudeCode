@@ -27,17 +27,24 @@ console.log('\x1b[1mbuildRerouteEnv\x1b[0m');
   const env = buildRerouteEnv({ port: 8788, sentinel: 'test-sentinel-abc' });
   check('base URL points at the given port', env.ANTHROPIC_BASE_URL === 'http://127.0.0.1:8788');
   check('auth token is the given sentinel', env.ANTHROPIC_AUTH_TOKEN === 'test-sentinel-abc');
-  check('model routes to the opus tier sentinel', env.ANTHROPIC_MODEL === 'deepseek-v4-opus');
+  check('default routes to the pro/medium profile', env.ANTHROPIC_MODEL === 'deepseek-v4-pro-medium');
+  // Fable has its own env var; leaving it unset is what made it fall through to the native
+  // entry and ignore the Pro/max intent entirely.
+  check('fable gets its own profile', env.ANTHROPIC_DEFAULT_FABLE_MODEL === 'deepseek-v4-pro-max');
+  check('no duplicate custom-model entry is created',
+    env.ANTHROPIC_CUSTOM_MODEL_OPTION === undefined && env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === undefined);
   // Each tier must arrive under its OWN name. One shared sentinel would make opus, sonnet and
   // fable indistinguishable at the shim and silently collapse them onto a single model.
   check('opus and sonnet use distinct tier sentinels',
     env.ANTHROPIC_DEFAULT_OPUS_MODEL !== env.ANTHROPIC_DEFAULT_SONNET_MODEL,
     `${env.ANTHROPIC_DEFAULT_OPUS_MODEL} vs ${env.ANTHROPIC_DEFAULT_SONNET_MODEL}`);
-  check('background/haiku stays on its own cheap sentinel',
-    env.ANTHROPIC_DEFAULT_HAIKU_MODEL === 'deepseek-v4-flash-bg');
+  check('haiku is a deliberate pick: flash at high',
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL === 'deepseek-v4-flash-high');
+  check('claude-code\'s own background routing gets the cheapest profile',
+    env.ANTHROPIC_SMALL_FAST_MODEL === 'deepseek-v4-flash-low');
   check('1M context window is advertised to the CLI',
     env.CLAUDE_CODE_MAX_CONTEXT_TOKENS === '1000000');
-  check('fast/background model routes to the bg sentinel', env.ANTHROPIC_SMALL_FAST_MODEL === 'deepseek-v4-flash-bg');
+  check('fast/background model routes to the cheapest profile', env.ANTHROPIC_SMALL_FAST_MODEL === 'deepseek-v4-flash-low');
   check('classifier-hang mitigations are present (from the dsv4shim shim fixes)',
     env.CLAUDE_CODE_DISABLE_FAST_MODE === '1' && env.CLAUDE_CODE_TWO_STAGE_CLASSIFIER === '0');
 }
@@ -75,7 +82,7 @@ console.log('\n\x1b[1mapplyCliReroute: existing settings.json is preserved, not 
   const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   check('pre-existing enabledPlugins untouched', written.enabledPlugins['code-review@x'] === true);
   check('pre-existing permissions untouched', written.permissions.defaultMode === 'default');
-  check('env block was added alongside existing keys', written.env.ANTHROPIC_MODEL === 'deepseek-v4-opus');
+  check('env block was added alongside existing keys', written.env.ANTHROPIC_MODEL === 'deepseek-v4-pro-medium');
   const backedUp = JSON.parse(fs.readFileSync(r.backupPath, 'utf8'));
   check('backup is byte-faithful to the ORIGINAL (no env block in it)', backedUp.env === undefined);
 }
@@ -261,7 +268,7 @@ console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicat
   fs.writeFileSync(sp, JSON.stringify({
     env: {
       ANTHROPIC_MODEL: 'deepseek-v4-flash',              // stale sentinel -> must refresh
-      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-opus',   // stale from a PREVIOUS scheme
       ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'DeepSeek V4 Flash 0731',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999',       // machine-specific -> never touched
       ANTHROPIC_AUTH_TOKEN: 'user-token',
@@ -273,13 +280,16 @@ console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicat
   const after = JSON.parse(fs.readFileSync(sp, 'utf8')).env;
 
   check('a stale tier sentinel is refreshed, not left behind',
-    after.ANTHROPIC_DEFAULT_SONNET_MODEL === 'deepseek-v4-sonnet', after.ANTHROPIC_DEFAULT_SONNET_MODEL);
+    after.ANTHROPIC_DEFAULT_SONNET_MODEL === 'deepseek-v4-flash-max', after.ANTHROPIC_DEFAULT_SONNET_MODEL);
   check('opus and sonnet end up distinguishable',
     after.ANTHROPIC_DEFAULT_OPUS_MODEL !== after.ANTHROPIC_DEFAULT_SONNET_MODEL,
     `${after.ANTHROPIC_DEFAULT_OPUS_MODEL} vs ${after.ANTHROPIC_DEFAULT_SONNET_MODEL}`);
-  check('the display name is refreshed too',
-    after.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === 'DeepSeek V4 Pro / Flash',
-    after.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME);
+  // The custom-model entry is gone entirely — it duplicated a menu that already lists every
+  // tier. A stale one left behind by an older reroute is not this function's to delete, but it
+  // must not be re-added either.
+  check('no custom-model entry is written back',
+    !('ANTHROPIC_CUSTOM_MODEL_OPTION' in after) || after.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === 'DeepSeek V4 Flash 0731',
+    JSON.stringify(after.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME));
   check('an existing base URL is never rewritten',
     after.ANTHROPIC_BASE_URL === 'http://127.0.0.1:9999', after.ANTHROPIC_BASE_URL);
   check('an existing auth token is never rewritten',
