@@ -217,5 +217,40 @@ check('an explicit dataDir override takes precedence over the computed default',
   assert.equal(r, bundled);
 });
 
+
+// --- config three-way merge -------------------------------------------------------
+// Add-only merging meant a CHANGED shipped default never reached an existing install: the
+// update reported success and the stale value stayed live. Three separate bugs shipped that
+// way in one night — stale prices, one shared model sentinel per tier, and a denyModelPatterns
+// entry that refused every new pro profile — each silent, each found by accident.
+{
+  const { threeWayMerge } = await import('./bin/dsv4shim-lib.mjs');
+  const eq = (a, b, msg) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${msg}: ${JSON.stringify(a)}`); };
+  const prev = { denyModelPatterns: ['deepseek-v4-pro', 'x'], model: 'old', cap: { dailyUsd: 5 }, gone: { a: 1 } };
+  const base = { denyModelPatterns: ['x'], model: 'new', cap: { dailyUsd: 5 } };
+
+  const untouched = structuredClone(prev);
+  const r1 = threeWayMerge(untouched, base, prev);
+  check('a stale default the user never touched is updated', () => eq(untouched.model, 'new', 'model'));
+  check('an array is replaced whole, not merged element-wise',
+    () => eq(untouched.denyModelPatterns, ['x'], 'deny'));
+  check('a key the shipped default dropped is removed',
+    () => { if ('gone' in untouched) throw new Error(JSON.stringify(r1.removed)); });
+
+  const customised = { ...structuredClone(prev), model: 'MINE', cap: { dailyUsd: 25 } };
+  threeWayMerge(customised, base, prev);
+  check('a user-changed value is kept', () => eq(customised.model, 'MINE', 'model'));
+  check('a user-changed nested value is kept', () => eq(customised.cap.dailyUsd, 25, 'cap'));
+
+  const noBase = structuredClone(prev);
+  const r3 = threeWayMerge(noBase, base, undefined);
+  check('with no base it degrades to add-only rather than guessing',
+    () => { if (noBase.model !== 'old' || r3.updated.length) throw new Error(JSON.stringify(r3)); });
+
+  const fresh = { model: 'old' };
+  threeWayMerge(fresh, { model: 'old', brandNew: 1 }, { model: 'old' });
+  check('a genuinely new key is still added', () => eq(fresh.brandNew, 1, 'brandNew'));
+}
+
 console.log(`\n\x1b[1m${pass} passed, ${fail} failed\x1b[0m\n`);
 process.exit(fail > 0 ? 1 : 0);

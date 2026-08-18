@@ -130,3 +130,44 @@ export function resolveClaude({ platform = process.platform,
     `  Install Claude Code from https://claude.com/code, then re-run.`
   );
 }
+
+/**
+ * Three-way merge of a shipped default into a live config, using the PREVIOUSLY shipped default
+ * as the base. Mutates `live`.
+ *
+ * A live value that still equals the old default was never touched by the user, so the new
+ * default applies. A value that differs is theirs and is kept. Arrays compare whole — merging
+ * them element-wise silently retains a removed entry, which is precisely how a stale
+ * `denyModelPatterns` entry survived and refused every new profile.
+ *
+ * With no `prev` (a first run, or an unreadable old default) this degrades to add-only, which
+ * is the safe direction: it can leave a value stale, never clobber a deliberate one.
+ *
+ * Exported for tests: this rule decides whether a shipped change reaches five machines or
+ * silently does not, and it had been wrong three separate times.
+ */
+export function threeWayMerge(live, base, prev) {
+  const added = [], updated = [], kept = [], removed = [];
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const isPlain = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  (function merge(dst, src, pv, path = '') {
+    for (const [k, v] of Object.entries(src)) {
+      const here = path ? `${path}.${k}` : k;
+      const was = pv ? pv[k] : undefined;
+      if (!(k in dst)) { dst[k] = v; added.push(here); continue; }
+      if (isPlain(v) && isPlain(dst[k])) { merge(dst[k], v, isPlain(was) ? was : undefined, here); continue; }
+      if (same(dst[k], v)) continue;
+      if (pv === undefined || was === undefined) continue;
+      if (same(dst[k], was)) { dst[k] = v; updated.push(here); }
+      else kept.push(here);
+    }
+    if (pv) {
+      for (const k of Object.keys(pv)) {
+        const here = path ? `${path}.${k}` : k;
+        if (k in src || !(k in dst)) continue;
+        if (same(dst[k], pv[k])) { delete dst[k]; removed.push(here); }
+      }
+    }
+  })(live, base, prev);
+  return { added, updated, kept, removed };
+}

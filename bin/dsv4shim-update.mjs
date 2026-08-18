@@ -32,6 +32,8 @@ import { join, dirname } from 'node:path';
 const REPO_URL = 'https://github.com/OuiaOa/dsv4shim.git';
 const DATA = process.env.DSV4SHIM_DATA_DIR || join(homedir(), '.local', 'share', 'dsv4shim');
 const CONFIG = process.env.DSV4SHIM_CONFIG_DIR || join(homedir(), '.config', 'dsv4shim');
+import { threeWayMerge } from './dsv4shim-lib.mjs';
+
 const CACHE = join(DATA, '.update-cache');
 const args = process.argv.slice(2);
 const CHECK_ONLY = args.includes('--check');
@@ -171,19 +173,32 @@ function mergeConfig() {
     live = readJson(livePath);
     base = readJson(basePath);
   } catch (e) { warn(`config merge skipped (unparseable JSON): ${e.message}`); return; }
-  const added = [];
-  (function merge(dst, src, path = '') {
-    for (const [k, v] of Object.entries(src)) {
-      const here = path ? `${path}.${k}` : k;
-      if (!(k in dst)) { dst[k] = v; added.push(here); }
-      else if (v && typeof v === 'object' && !Array.isArray(v) &&
-               dst[k] && typeof dst[k] === 'object' && !Array.isArray(dst[k])) merge(dst[k], v, here);
-    }
-  })(live, base);
-  if (added.length) {
+  // THREE-WAY MERGE. Adding only absent keys — the old behaviour — meant a CHANGED default
+  // never reached an existing install: the update reported success and the stale value stayed
+  // live. That shipped three separate bugs in one night (stale prices, one shared model
+  // sentinel per tier, and a denyModelPatterns entry that refused every new pro profile),
+  // each silent, each found only by accident.
+  //
+  // The old shipped default is the base: if the live value still equals it, the user never
+  // touched that key and the new default is safe to apply. If it differs, it is the user's
+  // and is left alone. This needs no list of "owned" keys to drift out of date.
+  const oldBase = (() => {
+    if (!installed) return null;
+    const r = git(['show', `${installed}:config.default.json`]);
+    if (!r.ok) return null;
+    try { return JSON.parse(r.out.replace(/^\uFEFF/, '')); } catch { return null; }
+  })();
+  if (!oldBase) log('config.json: no previous default available — adding new keys only');
+
+  const { added, updated, kept, removed } = threeWayMerge(live, base, oldBase || undefined);
+
+  if (added.length || updated.length || removed.length) {
     writeFileSync(livePath, JSON.stringify(live, null, 2) + '\n');
-    log(`config.json: added ${added.length} new key(s): ${added.join(', ')}`);
+    if (added.length) log(`config.json: added ${added.length} key(s): ${added.join(', ')}`);
+    if (updated.length) log(`config.json: updated ${updated.length} stale default(s): ${updated.join(', ')}`);
+    if (removed.length) log(`config.json: removed ${removed.length} superseded key(s): ${removed.join(', ')}`);
   }
+  if (kept.length) log(`config.json: kept ${kept.length} local customisation(s): ${kept.join(', ')}`);
 }
 
 /**
