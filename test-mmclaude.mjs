@@ -77,6 +77,9 @@ check('Background profile uses M2.5 when available', seen.at(-1)?.model === 'Min
 await send(msg('mmclaude-m2.5-background',{messages:[{role:'user',content:[{type:'text',text:'inspect this'},{type:'image',source:{type:'base64',media_type:'image/png',data:'aGVsbG8='}}]}]}));
 check('M3-compatible media remains native', Array.isArray(seen.at(-1)?.messages?.[0]?.content) && seen.at(-1).messages[0].content.some(x=>x.type==='image'));
 check('Claude effort fields are removed upstream', !('output_config' in seen.at(-1)) && !('reasoning' in seen.at(-1)));
+await send(msg('mmclaude-m3-default',{metadata:{user_id:'ultra-test'},output_config:{effort:'xhigh'}}));
+check('ultracode keeps M3 adaptive thinking', seen.at(-1)?.thinking?.type === 'adaptive');
+check('ultracode adds the parallel dispatch hint', JSON.stringify(seen.at(-1)?.system || '').includes('PARALLEL DISPATCH'));
 const concurrentMain = await Promise.all(Array.from({length:4}, () => send(msg('mmclaude-m3-default'))));
 check('main fan-out is queued at two concurrent upstream calls', concurrentMain.every(x=>x.status === 200) && maxUpstreamActive <= 2, String(maxUpstreamActive));
 const concurrentBackground = await Promise.all(Array.from({length:4}, () => send(msg('mmclaude-m2.5-background',{max_tokens:100000}))));
