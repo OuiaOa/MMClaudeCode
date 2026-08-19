@@ -72,7 +72,7 @@ function rawQuota(balance) {
   };
 }
 
-const C = { dim: '\x1b[2m', r: '\x1b[0m', cyan: '\x1b[36m', grn: '\x1b[32m', yel: '\x1b[33m', red: '\x1b[31m', b: '\x1b[1m' };
+const C = { dim: '\x1b[2m', r: '\x1b[0m', cyan: '\x1b[36m', grn: '\x1b[32m', yel: '\x1b[33m', orange: '\x1b[38;5;208m', red: '\x1b[31m', b: '\x1b[1m' };
 const parts = [];
 
 // model + effort
@@ -94,9 +94,9 @@ if (s.context_window?.used_percentage != null) {
 const q = { ...rawQuota(l.balance), ...(l.quota || {}) };
 if (q.enabled && (q.remainingPercent != null || q.weeklyRemainingPercent != null)) {
   const pct = v => v == null ? '?' : `${Number(v).toFixed(0)}%`;
-  const col = v => v != null && Number(v) <= 10 ? C.red : v != null && Number(v) <= 25 ? C.yel : C.grn;
+  const col = v => v == null ? C.grn : Number(v) <= 10 ? C.red : Number(v) <= 30 ? C.orange : Number(v) <= 50 ? C.yel : C.grn;
   parts.push(`${col(q.remainingPercent)}5h left ${pct(q.remainingPercent)}${C.r}`);
-  parts.push(`${col(q.weeklyRemainingPercent)}week left ${pct(q.weeklyRemainingPercent)}${C.r}`);
+  parts.push(`${col(q.weeklyRemainingPercent)}Week left ${pct(q.weeklyRemainingPercent)}${C.r}`);
 } else if (q.paused) {
   parts.push(`${C.yel}quota paused${C.r}`);
 } else if (l.balance) {
