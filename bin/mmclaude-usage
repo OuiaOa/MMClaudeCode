@@ -45,13 +45,22 @@ http.get({ host: '127.0.0.1', port, path: '/_mmclaude/usage', timeout: 2000, hea
   let b = ''; res.on('data', d => b += d); res.on('end', () => {
     try {
       const s = JSON.parse(b);
+      const rawRows = Array.isArray(s.balance?.model_remains) ? s.balance.model_remains : [];
+      const rawRow = rawRows.find(r => String(r?.model_name || '').toLowerCase() === 'general') || rawRows[0] || {};
+      const rawPct = v => Number.isFinite(Number(v)) ? Number(v) : null;
+      const liveQuota = {
+        ...(s.quota || {}),
+        enabled: s.quota?.enabled ?? rawRows.length > 0,
+        remainingPercent: s.quota?.remainingPercent ?? rawPct(rawRow.current_interval_remaining_percent),
+        weeklyRemainingPercent: s.quota?.weeklyRemainingPercent ?? rawPct(rawRow.current_weekly_remaining_percent),
+      };
       console.log(bold('\n  live'));
       console.log(`    local requests : ${num(s.requests || 0)} (diagnostic ledger)`);
       if (s.traffic) console.log(`    traffic        : ${s.traffic.active}/${s.traffic.maxConcurrent} active, ${s.traffic.queued} queued (${s.traffic.maxBackgroundConcurrent} background lane)`);
-      if (s.quota?.enabled) {
+      if (liveQuota.enabled) {
         const p = v => v == null ? 'unknown' : `${Number(v).toFixed(0)}% remaining`;
-        console.log(`    quota 5h       : ${p(s.quota.remainingPercent)}${s.quota.paused ? ` — PAUSED until ${s.quota.resumeAt || 'provider refresh'}` : ''}`);
-        console.log(`    quota weekly   : ${p(s.quota.weeklyRemainingPercent)}`);
+        console.log(`    quota 5h       : ${p(liveQuota.remainingPercent)}${liveQuota.paused ? ` — PAUSED until ${liveQuota.resumeAt || 'provider refresh'}` : ''}`);
+        console.log(`    quota weekly   : ${p(liveQuota.weeklyRemainingPercent)}`);
       }
       const q = s.balance;
       if (q) {

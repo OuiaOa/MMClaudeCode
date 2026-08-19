@@ -55,6 +55,21 @@ function fetchUsage(port, sentinel) {
 const s = (() => { try { return JSON.parse(readStdin() || '{}'); } catch { return {}; } })();
 const l = await fetchUsage(readPort(), readSentinel());
 
+// Older running shims, or a usage response captured during startup, may expose the raw
+// provider balance before the derived `quota` object was added. Derive the same two values
+// here so the statusline never degrades to a bare "quota live" when balance.json is valid.
+function rawQuota(balance) {
+  const rows = Array.isArray(balance?.model_remains) ? balance.model_remains : [];
+  const row = rows.find(r => String(r?.model_name || '').toLowerCase() === 'general') || rows[0];
+  if (!row) return {};
+  const numberOrNull = v => Number.isFinite(Number(v)) ? Number(v) : null;
+  return {
+    enabled: true,
+    remainingPercent: numberOrNull(row.current_interval_remaining_percent),
+    weeklyRemainingPercent: numberOrNull(row.current_weekly_remaining_percent),
+  };
+}
+
 const C = { dim: '\x1b[2m', r: '\x1b[0m', cyan: '\x1b[36m', grn: '\x1b[32m', yel: '\x1b[33m', red: '\x1b[31m', b: '\x1b[1m' };
 const parts = [];
 
@@ -74,12 +89,12 @@ if (s.context_window?.used_percentage != null) {
 // MiniMax Token Plan is quota-based, not a per-token billing API. Show the provider's live
 // remaining percentages instead of the local response-token ledger, which is not the plan's
 // accounting unit. The full usage command still exposes request-level diagnostics.
-const q = l.quota || {};
+const q = { ...rawQuota(l.balance), ...(l.quota || {}) };
 if (q.enabled && (q.remainingPercent != null || q.weeklyRemainingPercent != null)) {
   const pct = v => v == null ? '?' : `${Number(v).toFixed(0)}%`;
   const col = v => v != null && Number(v) <= 10 ? C.red : v != null && Number(v) <= 25 ? C.yel : C.grn;
-  parts.push(`${col(q.remainingPercent)}5h ${pct(q.remainingPercent)}${C.r}`);
-  parts.push(`${col(q.weeklyRemainingPercent)}wk ${pct(q.weeklyRemainingPercent)}${C.r}`);
+  parts.push(`${col(q.remainingPercent)}5h left ${pct(q.remainingPercent)}${C.r}`);
+  parts.push(`${col(q.weeklyRemainingPercent)}week left ${pct(q.weeklyRemainingPercent)}${C.r}`);
 } else if (q.paused) {
   parts.push(`${C.yel}quota paused${C.r}`);
 } else if (l.balance) {
