@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * dsv4shim-reroute — point an EXISTING, kept-installed Claude Code CLI at the dsv4shim shim, by
- * adding the standard dsv4shim env block to that install's OWN settings.json.
+ * mmclaude-reroute — point an EXISTING, kept-installed Claude Code CLI at the mmclaude shim, by
+ * adding the standard mmclaude env block to that install's OWN settings.json.
  *
  * This is Axis 3 from the multi-source import design ("keep Claude Code CLI installed, but
  * stop paying Anthropic through it"). The technique is PROVEN — built and verified working
  * end-to-end on PC-4D on 2026-08-12 (a real request through the shim with the target's
- * sentinel returned a genuine DeepSeek reply), then deliberately reverted there once the
+ * sentinel returned a genuine MiniMax reply), then deliberately reverted there once the
  * user decided against a full Desktop takeover. The mechanism itself was never in question;
  * only whether to point it at a shared config without being asked. Applied HERE, it always
  * is asked — this only ever runs as an explicit opt-in on a source disposition the user
@@ -20,9 +20,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Build the standard dsv4shim env block — the SAME keys dsv4shim-setup.mjs writes into dsv4shim's own
+ * Build the standard mmclaude env block — the SAME keys mmclaude-setup.mjs writes into mmclaude's own
  * isolated profile, applied here to someone else's settings.json instead. Keeping this in
- * one place (rather than copy-pasted between dsv4shim-setup.mjs and here) means a future change
+ * one place (rather than copy-pasted between mmclaude-setup.mjs and here) means a future change
  * to the isolated profile's env doesn't quietly drift out of sync with the reroute path.
  */
 export function buildRerouteEnv({ port, sentinel }) {
@@ -33,16 +33,16 @@ export function buildRerouteEnv({ port, sentinel }) {
     // states the real model AND its thinking level — that is the only way to tell from the menu
     // what an entry actually connects to. No ANTHROPIC_CUSTOM_MODEL_OPTION: it added a sixth,
     // duplicate entry to a menu that already lists every tier.
-    ANTHROPIC_MODEL: 'deepseek-v4-pro-medium',
-    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro-high',
-    ANTHROPIC_DEFAULT_FABLE_MODEL: 'deepseek-v4-pro-max',
-    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash-max',
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash-high',
+    ANTHROPIC_MODEL: 'mmclaude-m3-default',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'mmclaude-m3-thinking',
+    ANTHROPIC_DEFAULT_FABLE_MODEL: 'mmclaude-m3-thinking',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m2.7-thinking',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mmclaude-m2.7-highspeed-thinking',
     // Whatever Claude Code routes background work to on its own — older Haiku generations,
     // titles, compaction. Cheapest model, lowest thinking that still thinks.
-    ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-v4-flash-low',
-    CLAUDE_CODE_BG_CLASSIFIER_MODEL: 'deepseek-v4-flash-low',
-    CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-v4-flash-sub',
+    ANTHROPIC_SMALL_FAST_MODEL: 'mmclaude-m2.5-background',
+    CLAUDE_CODE_BG_CLASSIFIER_MODEL: 'mmclaude-m2.5-background',
+    CLAUDE_CODE_SUBAGENT_MODEL: 'mmclaude-m3-subagent',
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
     CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: '1',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -66,15 +66,15 @@ export function buildRerouteEnv({ port, sentinel }) {
  * bigger behavioral call than "which model backend to use", and unlike env vars it isn't
  * reversible-by-inspection if they don't notice. Leave their own permission choice alone.
  *
- * denyListSrc is the dsv4shim install's own SHIPPED copy (ROOT/deny-list.sh) — reused directly
+ * denyListSrc is the mmclaude install's own SHIPPED copy (ROOT/deny-list.sh) — reused directly
  * rather than copying it a second time into yet another location; it's already a stable
- * path dsv4shim itself manages, and only makes sense to wire up as a hook on non-Windows (it's
+ * path mmclaude itself manages, and only makes sense to wire up as a hook on non-Windows (it's
  * a bash script — no POSIX shell guaranteed on Windows, same reasoning as statusline.sh's
- * old platform gap that dsv4shim-statusline.mjs replaced).
+ * old platform gap that mmclaude-statusline.mjs replaced).
  */
 export function buildRerouteExtras({ rootDir, platform = process.platform }) {
   const extras = {
-    statusLine: { type: 'command', command: `node "${path.join(rootDir, 'bin', 'dsv4shim-statusline.mjs')}"`, refreshInterval: 10 },
+    statusLine: { type: 'command', command: `node "${path.join(rootDir, 'bin', 'mmclaude-statusline.mjs')}"`, refreshInterval: 10 },
     effortLevel: 'high',
     skipWebFetchPreflight: true,
   };
@@ -122,7 +122,7 @@ export function installPortableAssets(configDir, rootDir) {
  * nothing to back up, if the file didn't exist yet). Merges `env` key-by-key and each extras
  * top-level key individually — never touches anything the target already has a value for
  * (so a user's own deliberate customization always survives a reroute, consistent with how
- * dsv4shim-setup.mjs treats its own settings.json), and never overwrites an env var the target
+ * mmclaude-setup.mjs treats its own settings.json), and never overwrites an env var the target
  * file already set to something else.
  *
  * @param {string} settingsPath
@@ -151,7 +151,7 @@ const SHIM_OWNED_ENV = new Set([
 ]);
 
 const isShimSentinel = (v) =>
-  typeof v === 'string' && (/^deepseek-v4-/.test(v) || /^DeepSeek V4 /.test(v));
+  typeof v === 'string' && (/^mmclaude-(?:m3|m2\.7|m2\.5)/i.test(v) || /^MiniMax M[235]/i.test(v));
 
 export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) {
   let live = {};
@@ -194,7 +194,7 @@ export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) 
   }
   // hooks.PreToolUse is an array — a plain "add if key missing" check would silently skip
   // adding our entry to an ALREADY-populated array (the user's own hook, or a leftover from
-  // an earlier reroute). Dedup by command string instead, same as dsv4shim-setup.mjs's own
+  // an earlier reroute). Dedup by command string instead, same as mmclaude-setup.mjs's own
   // isolated-profile logic, so re-running reroute never duplicates the hook.
   if (denyListSrc) {
     live.hooks ??= {};

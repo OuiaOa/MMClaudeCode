@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Tests for bin/dsv4shim-sources.mjs — detection of Claude Code CLI, Claude Desktop, and
+ * Tests for bin/mmclaude-sources.mjs — detection of Claude Code CLI, Claude Desktop, and
  * opencode, against synthetic fixtures shaped like the real installs verified on PC-4D
  * (10.147.18.245) on 2026-08-12.
  */
@@ -11,10 +11,10 @@ import { createRequire } from 'node:module';
 import {
   claudeTranscriptRoot, findClaudeBinary, desktopDataDir, opencodeDataDir,
   desktopSidecars, opencodeStats, detectSources, loadSqlite,
-} from './bin/dsv4shim-sources.mjs';
+} from './bin/mmclaude-sources.mjs';
 
 const require = createRequire(import.meta.url);
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-sources-test-'));
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'mmclaude-sources-test-'));
 process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
 
 let pass = 0, fail = 0;
@@ -23,7 +23,7 @@ function check(name, cond, detail = '') {
   else { console.log(`  \x1b[31m✗\x1b[0m ${name}${detail ? `  -> ${detail}` : ''}`); fail++; }
 }
 
-console.log('\n\x1b[1mdsv4shim-sources tests\x1b[0m\n');
+console.log('\n\x1b[1mmmclaude-sources tests\x1b[0m\n');
 
 // ------------------------------------------------------------- fixture: nothing installed
 console.log('\x1b[1mnothing installed\x1b[0m');
@@ -157,14 +157,14 @@ console.log('\n\x1b[1mplatform-specific path resolution\x1b[0m');
   // simulated `platform` param (path.join isn't platform-aware, only path.win32.join is) --
   // check the meaningful part (APPDATA was honoured, "Claude" was appended) rather than an
   // exact separator match. The real Windows separator behavior was already verified live
-  // against PC-4D's actual filesystem in dsv4shim-multi-source-import notes.
+  // against PC-4D's actual filesystem in mmclaude-multi-source-import notes.
   check('desktop dir on win32 uses APPDATA',
     desktopDataDir({ home: '/home/x', env: { APPDATA: 'C:\\Users\\x\\AppData\\Roaming' }, platform: 'win32' })
       === path.join('C:\\Users\\x\\AppData\\Roaming', 'Claude'));
   check('desktop dir on darwin uses Library/Application Support',
-    desktopDataDir({ home: '/Users/x', env: {}, platform: 'darwin' }) === '/Users/x/Library/Application Support/Claude');
+    desktopDataDir({ home: '/Users/x', env: {}, platform: 'darwin' }) === path.join('/Users/x', 'Library', 'Application Support', 'Claude'));
   check('desktop dir on linux uses .config',
-    desktopDataDir({ home: '/home/x', env: {}, platform: 'linux' }) === '/home/x/.config/Claude');
+    desktopDataDir({ home: '/home/x', env: {}, platform: 'linux' }) === path.join('/home/x', '.config', 'Claude'));
   check('opencode dir is XDG-shaped on every platform, including Windows',
     opencodeDataDir({ home: 'C:\\Users\\x', env: {} }) === path.join('C:\\Users\\x', '.local', 'share', 'opencode'));
   check('opencode dir honours XDG_DATA_HOME when set',

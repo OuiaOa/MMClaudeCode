@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end test of the real installed dsv4shim: a real Claude Code session, against the
-# real DeepSeek endpoint, with real screenshots routed through the real vision model.
+# End-to-end test of the real installed mmclaude: a real Claude Code session, against the
+# real MiniMax endpoint, with real screenshots routed through the real vision model.
 #
 # Each scenario plants a defect that is visible ONLY in the render — the numbers that collide
 # live in separate source files and neither is wrong alone. So the agent cannot answer from the
@@ -11,8 +11,8 @@
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_DIR="${DSV4SHIM_CONFIG_DIR:-$HOME/.config/dsv4shim}"
-DATA_DIR="${DSV4SHIM_DATA_DIR:-$HOME/.local/share/dsv4shim}"
+CONFIG_DIR="${MMCLAUDE_CONFIG_DIR:-$HOME/.config/mmclaude}"
+DATA_DIR="${MMCLAUDE_DATA_DIR:-$HOME/.local/share/mmclaude}"
 LEDGER="$DATA_DIR/usage.jsonl"
 WORK="$DIR/tmp"
 mkdir -p "$WORK"
@@ -26,13 +26,13 @@ head_() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 # two lines and every arithmetic comparison downstream blows up.
 count_rows() { local n; n=$(grep -c "$1" "$LEDGER" 2>/dev/null | head -1); echo "${n:-0}"; }
 vision_calls() { count_rows '"provider":"deepinfra"'; }
-ds_requests()  { count_rows '"provider":"deepseek"'; }
+ds_requests()  { count_rows '"provider":"minimax"'; }
 
 run_claude() {           # run_claude <cwd> <prompt-file> -> stdout captured to $OUT
   local cwd="$1" promptfile="$2"
-  ( cd "$cwd" && CLAUDE_CONFIG_DIR="$HOME/.dsv4shim" \
+  ( cd "$cwd" && CLAUDE_CONFIG_DIR="$HOME/.mmclaude" \
       timeout 900 claude -p "$(cat "$promptfile")" \
-        --settings "$HOME/.dsv4shim/settings.json" 2>&1 )
+        --settings "$HOME/.mmclaude/settings.json" 2>&1 )
 }
 
 # --------------------------------------------------------------------- scenario: game
@@ -60,7 +60,7 @@ EOF
 
   local v1; v1=$(vision_calls)
   [[ "$v1" -gt "$v0" ]] && ok "vision model was invoked ($((v1-v0)) call)" || bad "no vision call recorded" "the agent never saw the image"
-  [[ "$(ds_requests)" -gt "$d0" ]] && ok "DeepSeek did the reasoning" || bad "no DeepSeek requests"
+  [[ "$(ds_requests)" -gt "$d0" ]] && ok "MiniMax did the reasoning" || bad "no MiniMax requests"
 
   grep -qi "minimap" <<<"$out" && ok "identified the minimap" || bad "did not mention the minimap"
   grep -qiE "health|hp" <<<"$out" && ok "identified the health bar" || bad "did not mention the health bar"
@@ -140,8 +140,8 @@ EOF
 }
 
 # --------------------------------------------------------------------------- main
-printf '\033[1mdsv4shim end-to-end\033[0m\n'
-curl -sf -m 3 "http://127.0.0.1:$(node -e 'process.stdout.write(String(process.env.DSV4SHIM_PORT||JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port||8788))' "$CONFIG_DIR/config.json")/_dsv4shim/health" >/dev/null \
+printf '\033[1mmmclaude end-to-end\033[0m\n'
+curl -sf -m 3 "http://127.0.0.1:$(node -e 'process.stdout.write(String(process.env.MMCLAUDE_PORT||JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).port||8788))' "$CONFIG_DIR/config.json")/_mmclaude/health" >/dev/null \
   && echo "  shim: healthy" || { echo "  shim: NOT RESPONDING — aborting"; exit 1; }
 
 case "${1:-all}" in

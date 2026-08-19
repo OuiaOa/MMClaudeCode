@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Side-effect-free helpers shared by bin/dsv4shim.mjs and the CLI tests.
+ * Side-effect-free helpers shared by bin/mmclaude.mjs and the CLI tests.
  *
  * Kept separate so it can be imported from a test without triggering the
- * top-level dispatch in dsv4shim.mjs.
+ * top-level dispatch in mmclaude.mjs.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 
 /**
  * Recursively visit every FILE (not directory) under `root`, calling
- * `onFile(fullPath, relativePath)` for each. Shared by dsv4shim-sources.mjs and dsv4shim-scrub.mjs,
+ * `onFile(fullPath, relativePath)` for each. Shared by mmclaude-sources.mjs and mmclaude-scrub.mjs,
  * which each used to hand-roll their own near-identical recursive walk — five copies across
  * the two files, differing only in what they did per file. A missing/unreadable directory is
  * silently skipped (matches every original copy's behavior: detection/scrub must not crash
@@ -71,21 +71,21 @@ export function walkFiles(root, onFile) {
 export function resolveClaude({ platform = process.platform,
                                 home = os.homedir(),
                                 env = process.env,
-                                // Same fallback dsv4shim.mjs itself uses for DATA_DIR — kept as
-                                // a real default (not just "read env.DSV4SHIM_DATA_DIR and give
+                                // Same fallback mmclaude.mjs itself uses for DATA_DIR — kept as
+                                // a real default (not just "read env.MMCLAUDE_DATA_DIR and give
                                 // up if it's unset") because callers essentially never set
                                 // that env var explicitly; the default install path IS the
                                 // data dir on a normal install. Second bug found alongside
                                 // the platform one below: without this default, the bundled
                                 // check only ever fired for someone who'd hand-exported
-                                // DSV4SHIM_DATA_DIR — i.e. never, in practice.
-                                dataDir = env.DSV4SHIM_DATA_DIR || path.join(home, '.local', 'share', 'dsv4shim'),
+                                // MMCLAUDE_DATA_DIR — i.e. never, in practice.
+                                dataDir = env.MMCLAUDE_DATA_DIR || path.join(home, '.local', 'share', 'mmclaude'),
                                 fsSync = fs,
                                 exec = spawnSync } = {}) {
   // Bundled copy wins on EVERY platform when present — "bundled-private" mode (install
   // --bundle, or the actual bundle-and-drop-credentials action a "remove Claude Code"
-  // setup choice performs — see dsv4shim-scrub.mjs's performCliRemoval) copies the real
-  // binary here specifically so dsv4shim never has to fall back to a system-wide `claude`
+  // setup choice performs — see mmclaude-scrub.mjs's performCliRemoval) copies the real
+  // binary here specifically so mmclaude never has to fall back to a system-wide `claude`
   // that might carry a real Anthropic login.
   //
   // CONFIRMED LIVE BUG, fixed 2026-08-13: this check used to live entirely inside the

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Tests for bin/dsv4shim-setup-sources.mjs — the orchestration that turns the picker's
- * leave/copy/move/remove choices into real dsv4shim-import + dsv4shim-scrub calls. This is glue
- * code over already-unit-tested building blocks (dsv4shim-sources, dsv4shim-scrub,
- * dsv4shim-opencode-convert); what matters here is that it wires them together with the RIGHT
+ * Tests for bin/mmclaude-setup-sources.mjs — the orchestration that turns the picker's
+ * leave/copy/move/remove choices into real mmclaude-import + mmclaude-scrub calls. This is glue
+ * code over already-unit-tested building blocks (mmclaude-sources, mmclaude-scrub,
+ * mmclaude-opencode-convert); what matters here is that it wires them together with the RIGHT
  * arguments and respects the shared-transcript independence rule (claude-desktop's
  * disposition must never scrub claude-cli's transcripts and vice versa).
  */
@@ -11,13 +11,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
-import { applySourceDispositions } from './bin/dsv4shim-setup-sources.mjs';
+import { applySourceDispositions } from './bin/mmclaude-setup-sources.mjs';
 
 const require = createRequire(import.meta.url);
 const DatabaseSync = (() => { try { return require('node:sqlite').DatabaseSync; } catch { return null; } })();
 
 const ROOT = path.resolve(import.meta.dirname);
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-setup-sources-test-'));
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'mmclaude-setup-sources-test-'));
 process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
 
 let pass = 0, fail = 0;
@@ -53,7 +53,7 @@ function makeDesktopSource(transcriptRoot, sidecarsRoot) {
   };
 }
 
-console.log('\n\x1b[1mdsv4shim-setup-sources tests\x1b[0m\n');
+console.log('\n\x1b[1mmmclaude-setup-sources tests\x1b[0m\n');
 
 // -------------------------------------------------------------------- copy-only, no scrub
 console.log('\x1b[1mcopy: imports but never scrubs\x1b[0m');
@@ -68,11 +68,11 @@ console.log('\x1b[1mcopy: imports but never scrubs\x1b[0m');
     sources: [cli],
     disposition: { 'claude-cli': 'copy' },
     node: process.execPath, ROOT, PROFILE_DIR: profileDir,
-    importEnv: { HOME: claudeHome, DSV4SHIM_PROFILE: profileDir },
+    importEnv: { HOME: claudeHome, MMCLAUDE_PROFILE: profileDir },
     importStdio: 'pipe', log: quiet, errorLog: quiet,
   });
 
-  check('session imported into the dsv4shim profile',
+  check('session imported into the mmclaude profile',
     fs.existsSync(path.join(profileDir, 'projects', 'C--Users-test', 'sessionA.jsonl')));
   check('source transcript still present (copy never scrubs)',
     fs.existsSync(path.join(transcriptRoot, 'C--Users-test', 'sessionA.jsonl')));
@@ -92,11 +92,11 @@ console.log('\n\x1b[1mmove: imports then scrubs the source\x1b[0m');
     sources: [cli],
     disposition: { 'claude-cli': 'move' },
     node: process.execPath, ROOT, PROFILE_DIR: profileDir,
-    importEnv: { HOME: claudeHome, DSV4SHIM_PROFILE: profileDir },
+    importEnv: { HOME: claudeHome, MMCLAUDE_PROFILE: profileDir },
     importStdio: 'pipe', log: quiet, errorLog: quiet,
   });
 
-  check('session imported into the dsv4shim profile',
+  check('session imported into the mmclaude profile',
     fs.existsSync(path.join(profileDir, 'projects', 'C--Users-test', 'sessionA.jsonl')));
   check('source transcript REMOVED after move', !fs.existsSync(path.join(transcriptRoot, 'C--Users-test', 'sessionA.jsonl')));
   check('source memory REMOVED after move', !fs.existsSync(path.join(transcriptRoot, 'C--Users-test', 'memory', 'MEMORY.md')));
@@ -122,7 +122,7 @@ console.log('\n\x1b[1mshared-transcript independence: desktop move must NOT touc
     sources: [cli, desktop],
     disposition: { 'claude-desktop': 'remove' }, // cli deliberately absent -> defaults to 'leave'
     node: process.execPath, ROOT, PROFILE_DIR: profileDir,
-    importEnv: { HOME: claudeHome, DSV4SHIM_PROFILE: profileDir },
+    importEnv: { HOME: claudeHome, MMCLAUDE_PROFILE: profileDir },
     importStdio: 'pipe', log: quiet, errorLog: quiet,
   });
 
@@ -130,7 +130,7 @@ console.log('\n\x1b[1mshared-transcript independence: desktop move must NOT touc
     fs.existsSync(path.join(transcriptRoot, 'C--Users-test', 'sessionA.jsonl')));
   check('desktop\'s own sidecar IS removed',
     !fs.existsSync(path.join(sidecarsRoot, 'local_11111111-1111-1111-1111-111111111111.json')));
-  check('the transcript was still imported into dsv4shim (desktop\'s "remove" still copies first)',
+  check('the transcript was still imported into mmclaude (desktop\'s "remove" still copies first)',
     fs.existsSync(path.join(profileDir, 'projects', 'C--Users-test', 'sessionA.jsonl')));
 }
 
@@ -147,7 +147,7 @@ console.log('\n\x1b[1mleave: touches nothing at all\x1b[0m');
     sources: [cli],
     disposition: { 'claude-cli': 'leave' },
     node: process.execPath, ROOT, PROFILE_DIR: profileDir,
-    importEnv: { HOME: claudeHome, DSV4SHIM_PROFILE: profileDir },
+    importEnv: { HOME: claudeHome, MMCLAUDE_PROFILE: profileDir },
     importStdio: 'pipe', log: quiet, errorLog: quiet,
   });
 

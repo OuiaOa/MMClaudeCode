@@ -1,6 +1,6 @@
-# dsv4shim installer - Windows 11 (PowerShell)
+# mmclaude installer - Windows 11 (PowerShell)
 #
-# There is no systemd here, so the shim is started on demand by `dsv4shim run` instead of by a
+# There is no systemd here, so the shim is started on demand by `mmclaude run` instead of by a
 # service. That costs ~1s on first launch and removes a whole class of thing that can break.
 #
 # Detects Node and Claude Code. If Node itself is missing, attempts to install it via winget
@@ -11,7 +11,7 @@
 #
 # Flags:
 #   -NoAutoInstall    do NOT auto-install Node.js or Claude Code even if missing
-#   -Bundle           copy Claude Code's binary into the dsv4shim install, so the resulting
+#   -Bundle           copy Claude Code's binary into the mmclaude install, so the resulting
 #                     setup is self-contained and the resolver prefers the bundled copy
 #   -Update           re-copy files even if the destination already exists
 #
@@ -30,7 +30,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $src  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$dest = if ($env:DSV4SHIM_HOME) { $env:DSV4SHIM_HOME } else { Join-Path $HOME ".local\share\dsv4shim" }
+$dest = if ($env:MMCLAUDE_HOME) { $env:MMCLAUDE_HOME } else { Join-Path $HOME ".local\share\mmclaude" }
 $bin  = Join-Path $HOME ".local\bin"
 
 # ------------------------------------------------- Node (auto-install, then hard check)
@@ -58,7 +58,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 $nodeVersion = (node -e 'process.stdout.write(process.versions.node)')
 $nodeMajor = [int]$nodeVersion.Split('.')[0]
 if ($nodeMajor -lt 20) {
-    throw "Node $nodeVersion detected -- dsv4shim needs v20 or newer. Please upgrade: https://nodejs.org/"
+    throw "Node $nodeVersion detected -- mmclaude needs v20 or newer. Please upgrade: https://nodejs.org/"
 }
 
 # ---------------------------------------------- Find Claude Code binary
@@ -122,7 +122,7 @@ if ($src -ne $dest -or $Update) {
     }
     Copy-Item (Join-Path $src "bin") $dest -Recurse -Force
     if (Test-Path (Join-Path $src "e2e")) { Copy-Item (Join-Path $src "e2e") $dest -Recurse -Force }
-    # Skills (Claude Code Skills) -- auto-discovered under the dsv4shim profile. Copy
+    # Skills (Claude Code Skills) -- auto-discovered under the mmclaude profile. Copy
     # the whole skills/ tree so user-level skills install alongside the binary.
     if (Test-Path (Join-Path $src "skills")) { Copy-Item (Join-Path $src "skills") $dest -Recurse -Force }
     # Agents (Claude Code subagents) -- one .md per agent, discovered under the profile's
@@ -131,7 +131,7 @@ if ($src -ne $dest -or $Update) {
 }
 
 # ------------------------------------------ Optional: bundle Claude Code
-# Copies claude into the dsv4shim install so the resolver can prefer it. Makes the dsv4shim
+# Copies claude into the mmclaude install so the resolver can prefer it. Makes the mmclaude
 # install self-contained -- PATH becomes optional.
 if ($Bundle -and $claudeBin) {
     $bundled = Join-Path $dest "bin\claude.cmd"
@@ -150,11 +150,9 @@ if ($Bundle -and $claudeBin) {
 }
 
 # .cmd shims: Windows cannot exec a .mjs directly from PATH
-# `dsv4f` and `claude-dsv4f` were two names for one script; under the DSv4Shim rename they
-# collapse to a single `dsv4shim`, so there is one entry where there were two. A duplicate key
-# in a PowerShell hash literal is a hard parse error, not a silent overwrite.
-$entries = @{ "dsv4shim" = "bin\dsv4shim.mjs";
-              "dsv4shim-usage" = "bin\dsv4shim-usage"; "dsv4shim-import" = "bin\dsv4shim-import" }
+# Legacy aliases are removed separately so the hash contains one unambiguous mmclaude entry.
+$entries = @{ "mmclaude" = "bin\mmclaude.mjs";
+              "mmclaude-usage" = "bin\mmclaude-usage"; "mmclaude-import" = "bin\mmclaude-import" }
 foreach ($name in $entries.Keys) {
     $target = Join-Path $dest $entries[$name]
     Set-Content -Path (Join-Path $bin "$name.cmd") -Encoding ASCII -Value @"
@@ -171,4 +169,4 @@ if ($userPath -notlike "*$bin*") {
 
 Write-Host ""
 Write-Host "Installed to $dest" -ForegroundColor Green
-Write-Host "Next:  dsv4shim setup"
+Write-Host "Next:  mmclaude setup"

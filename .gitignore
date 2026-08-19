@@ -6,7 +6,7 @@ shim.log
 shim.pid
 vision-cache/
 
-# Updater bookkeeping (see bin/dsv4shim-update.mjs). The cache clone is where the
+# Updater bookkeeping (see bin/mmclaude-update.mjs). The cache clone is where the
 # repo is fetched to; only files git tracks are copied out of it into the install,
 # which is what keeps an update from ever touching the runtime state above.
 .update-cache/
@@ -19,6 +19,6 @@ e2e/scenes/
 e2e/scene-truth.json
 e2e/tmp/
 
-# Local machine config (keys live in ~/.config/dsv4shim, never here)
+# Local machine config (keys live in ~/.config/mmclaude, never here)
 config.json
 probe-results.json

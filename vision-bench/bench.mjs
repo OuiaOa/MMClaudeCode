@@ -2,7 +2,7 @@
 /**
  * Scores a vision model against the benchmark fixtures.
  *
- * By default it tests whatever model your dsv4shim install is configured to use, so the
+ * By default it tests whatever model your mmclaude install is configured to use, so the
  * question it answers is "is MY vision setup any good", not "which model is best in the
  * abstract". Pass --model to compare alternatives before committing to one.
  *
@@ -29,7 +29,7 @@ import os from 'node:os';
 
 const DIR = import.meta.dirname;
 const HOME = os.homedir();
-const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
+const CONFIG_DIR = process.env.MMCLAUDE_CONFIG_DIR || path.join(HOME, '.config', 'mmclaude');
 
 const args = process.argv.slice(2);
 const flag = f => args.includes(f);
@@ -41,10 +41,10 @@ const vision = cfg.vision || {};
 const ENDPOINT = val('--endpoint', vision.endpoint || 'https://api.deepinfra.com/v1/openai/chat/completions');
 const KEYFILE = path.join(CONFIG_DIR, vision.keyFile || 'deepinfra-key');
 
-let KEY = process.env.DSV4SHIM_VISION_KEY || '';
+let KEY = process.env.MMCLAUDE_VISION_KEY || '';
 if (!KEY) { try { KEY = fs.readFileSync(KEYFILE, 'utf8').trim(); } catch { /* reported below */ } }
 if (!KEY) {
-  console.error(`No vision API key.\n  Expected at ${KEYFILE} — run: dsv4shim key deepinfra\n  Or set DSV4SHIM_VISION_KEY.`);
+  console.error(`No vision API key.\n  Expected at ${KEYFILE} — run: mmclaude key deepinfra\n  Or set MMCLAUDE_VISION_KEY.`);
   process.exit(1);
 }
 

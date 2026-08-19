@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * dsv4shim-import — bring your existing Claude Code state into the dsv4shim profile.
+ * mmclaude-import — bring your existing Claude Code state into the mmclaude profile.
  *
  * Copies memories, per-project session transcripts, permissions and any agents/skills/commands
- * from ~/.claude into ~/.dsv4shim, so `dsv4shim` in a project directory sees the same
+ * from ~/.claude into ~/.mmclaude, so `mmclaude` in a project directory sees the same
  * history and can --resume it.
  *
  * Transcripts are SANITISED on the way in, and that is the part that makes resume actually work
  * rather than 400 on the first turn. Anthropic assistant turns carry thinking blocks with
- * cryptographic signatures that DeepSeek cannot validate, plus image blocks its endpoint does
+ * cryptographic signatures that MiniMax cannot validate, plus image blocks its endpoint does
  * not accept at all. Copying them verbatim produces a conversation that cannot be replayed. So:
  *   - thinking / redacted_thinking blocks are dropped, and any `signature` field with them
  *   - image and document blocks become a short text placeholder
- *   - cache_control markers are stripped (DeepSeek ignores them; they only bloat the body)
+ *   - cache_control markers are stripped (MiniMax ignores them; they only bloat the body)
  *
  * The walk is recursive. Each Claude Code project directory contains:
  *   - <uuid>.jsonl             — main session transcript (scrubbed)
@@ -26,18 +26,18 @@
  *
  * Never copies .credentials.json — that is an Anthropic OAuth session and is meaningless here.
  *
- * Usage: dsv4shim-import [--dry-run] [--force] [--auto] [--quiet] [--source <path>]
+ * Usage: mmclaude-import [--dry-run] [--force] [--auto] [--quiet] [--source <path>]
  *
  *   --source <path>   import from a directory other than ~/.claude
  *                      (if ~/.claude is missing AND stdin is a TTY, you'll be prompted)
- *   --auto            no interactive picker (implies "all"); used by the dsv4shim
+ *   --auto            no interactive picker (implies "all"); used by the mmclaude
  *                      launcher on every run, not just the first
  *   --quiet           print nothing unless something actually changed (one compact line);
  *                      with neither --auto nor --quiet, prints the full itemised report
  *
  * INCREMENTAL BY DEFAULT: a per-file manifest (.import-state.json, mtime+size) means a repeat
  * run only re-scrubs/copies files that are new or have changed since the last run — the whole
- * point being that this is cheap enough to run on every single `dsv4shim` launch, not just
+ * point being that this is cheap enough to run on every single `mmclaude` launch, not just
  * once. (Earlier versions gated the whole import behind a one-time .imported marker file, so
  * any Claude Code session created after the very first launch was never picked up again —
  * --force still exists to wipe the manifest and reprocess everything from scratch.)
@@ -46,8 +46,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-const HOME = os.homedir();
-const DST = process.env.DSV4SHIM_PROFILE || path.join(HOME, '.dsv4shim');
+// HOME is normally the platform home directory. The explicit override keeps portable and
+// test installs deterministic on Windows, where os.homedir() intentionally ignores HOME.
+const HOME = process.env.MMCLAUDE_HOME || process.env.HOME || os.homedir();
+const DST = process.env.MMCLAUDE_PROFILE || path.join(HOME, '.mmclaude');
 const MARKER = path.join(DST, '.imported');            // now just "last synced at", not a gate
 const STATE_FILE = path.join(DST, '.import-state.json'); // per-file mtime+size manifest
 
@@ -126,7 +128,7 @@ function needsProcessing(srcFile, relKey) {
 
 /**
  * Anthropic-meta tags embedded in TEXT strings. These are part of how Claude Code's
- * runtime / IDE talks to Claude; they are meaningless to DeepSeek and the Anthropic-shaped
+ * runtime / IDE talks to Claude; they are meaningless to MiniMax and the Anthropic-shaped
  * prompts that already lost their meaning would just confuse the new model. Removing them
  * keeps the conversation flow intact without dragging Anthropic-specific scaffolding along.
  *
@@ -136,7 +138,7 @@ function needsProcessing(srcFile, relKey) {
  */
 const TAG_PATTERNS = [
   // System reminders Claude Code injects into the prompt — none of the context is useful
-  // when the runtime is gone and the model is DeepSeek.
+  // when the runtime is gone and the model is MiniMax.
   { re: /<system-reminder>[\s\S]*?<\/system-reminder>/g, label: '[system-reminder elided]' },
   // IDE selection snapshots (cursor position, etc.) — stale and Anthropic-specific.
   { re: /<ide_selection>[\s\S]*?<\/ide_selection>/g, label: '[ide_selection elided]' },
@@ -147,10 +149,10 @@ const TAG_PATTERNS = [
 ];
 
 /**
- * Patterns for AI-self-descriptions that DeepSeek should not parrot back. These are
+ * Patterns for AI-self-descriptions that MiniMax should not parrot back. These are
  * Anthropic-specific and only ever appear when Claude itself wrote the text; the user
  * almost certainly did not. Strip them so the resumed session does not lead off with "as
- * an AI assistant by Anthropic" or similar nonsense when DeepSeek has no idea what Claude is.
+ * an AI assistant by Anthropic" or similar nonsense when MiniMax has no idea what Claude is.
  *
  * Conservative on purpose — only matches the *exact* Claude/Anthropic boilerplate, never
  * the user's own words.
@@ -312,7 +314,7 @@ function walkTree(from, to, rel = '') {
 // worth printing at all is only known once the whole walk is done, and most runs find
 // nothing new. See the final QUIET/AUTO-aware summary block at the bottom.
 if (!AUTO) {
-  console.log(bold(`\ndsv4shim import${DRY ? ' (dry run — nothing written)' : ''}\n`));
+  console.log(bold(`\nmmclaude import${DRY ? ' (dry run — nothing written)' : ''}\n`));
   console.log(`  from ${SRC}\n  to   ${DST}\n`);
 }
 
@@ -328,7 +330,7 @@ let selectedProjects = null;   // null = no source dir / no interactive picker; 
 
 if (fs.existsSync(projSrc)) {
   const allProjects = fs.readdirSync(projSrc)
-    .filter(p => !p.includes('dsv4shim'));   // never import this profile into itself
+    .filter(p => !p.includes('mmclaude'));   // never import this profile into itself
 
   if (allProjects.length === 0) {
     console.log(dim('  (no projects found in source)'));
@@ -457,23 +459,23 @@ if (QUIET) {
   // The whole point of --quiet (used by the launcher on every single run): say nothing when
   // there's nothing new, so a normal launch with no upstream activity since the last one
   // doesn't print anything at all. When something DID change, one compact line beats silence
-  // — the user should be able to tell dsv4shim is actually keeping up, not just trust it blindly.
+  // — the user should be able to tell mmclaude is actually keeping up, not just trust it blindly.
   if (hadChanges) {
     const bits = [];
     if (sanitised) bits.push(`${sanitised} session${sanitised === 1 ? '' : 's'}`);
     const otherFiles = copied - sanitised;
     if (otherFiles > 0) bits.push(`${otherFiles} other item${otherFiles === 1 ? '' : 's'}`);
-    console.log(`dsv4shim: synced ${bits.join(', ') || `${copied} item(s)`} from ${SRC}`);
+    console.log(`mmclaude: synced ${bits.join(', ') || `${copied} item(s)`} from ${SRC}`);
   }
 } else {
   console.log(plan.join('\n') || '  (nothing to import)');
   console.log(bold('\nSummary'));
   console.log(`  files copied        : ${copied}`);
   console.log(`  transcripts scrubbed: ${sanitised}`);
-  console.log(`  thinking blocks     : ${thinkingDropped} dropped ${dim('(signatures DeepSeek cannot validate)')}`);
+  console.log(`  thinking blocks     : ${thinkingDropped} dropped ${dim('(signatures MiniMax cannot validate)')}`);
   console.log(`  images/documents    : ${imagesDropped} replaced ${dim('(unsupported upstream)')}`);
   if (skippedUnchanged) console.log(`  unchanged           : ${skippedUnchanged} file(s) already synced (no changes since last run)`);
-  if (skipped) console.log(`  skipped             : ${skipped} dsv4shim project dir(s)`);
+  if (skipped) console.log(`  skipped             : ${skipped} mmclaude project dir(s)`);
   console.log(dim('\n  .credentials.json was NOT copied — it is an Anthropic session, meaningless here.'));
 }
 
@@ -481,7 +483,7 @@ if (!DRY) {
   fs.mkdirSync(DST, { recursive: true });
   fs.writeFileSync(MARKER, new Date().toISOString() + '\n');
   fs.writeFileSync(STATE_FILE, JSON.stringify(newState));
-  if (!AUTO) console.log(`\n${bold('Done.')} cd into any project and run: dsv4shim run --resume\n`);
+  if (!AUTO) console.log(`\n${bold('Done.')} cd into any project and run: mmclaude run --resume\n`);
 } else {
   console.log(`\n${bold('Dry run.')} Re-run without --dry-run to apply.\n`);
 }

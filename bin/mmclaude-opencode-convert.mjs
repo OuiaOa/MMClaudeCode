@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * dsv4shim-opencode-convert — convert an opencode session (SQLite: session/message/part
+ * mmclaude-opencode-convert — convert an opencode session (SQLite: session/message/part
  * tables) into a Claude Code-shaped .jsonl transcript, so it can sit in
- * ~/.dsv4shim/projects/<project>/<session>.jsonl and be resumed the normal way.
+ * ~/.mmclaude/projects/<project>/<session>.jsonl and be resumed the normal way.
  *
  * opencode's real schema (captured live from an actual install on PC-4D, 10.147.18.245,
  * 2026-08-12 — re-verify before trusting this if much time has passed, opencode moves fast):
@@ -19,10 +19,10 @@
  *                                                            tokens feed the usage field)
  *     Only these five types have been observed on the one real install checked. An unknown
  *     type is NOT silently dropped (that could hide real content) — it degrades to a visible
- *     text placeholder instead, matching dsv4shim-import's own failure philosophy elsewhere.
+ *     text placeholder instead, matching mmclaude-import's own failure philosophy elsewhere.
  *
  * Mapping decisions:
- *   - `reasoning` parts are dropped, matching dsv4shim-import's existing handling of Anthropic
+ *   - `reasoning` parts are dropped, matching mmclaude-import's existing handling of Anthropic
  *     `thinking` blocks (stripped on the way in, since the target model can't validate
  *     Anthropic's cryptographic signature on them anyway — opencode's reasoning text has no
  *     such signature to begin with, so there's nothing valid to carry over).
@@ -43,7 +43,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { loadSqlite } from './dsv4shim-sources.mjs';
+import { loadSqlite } from './mmclaude-sources.mjs';
 
 /**
  * CONFIRMED LIVE BUG (2026-08-12), now fixed: opencode's own IDs (ses_xxx/msg_xxx/prt_xxx)
@@ -59,7 +59,7 @@ import { loadSqlite } from './dsv4shim-sources.mjs';
  * has no built-in uuid-v5 function, but the algorithm is just "hash namespace+name, then set
  * the version/variant bits," which createHash covers without adding a dependency.
  */
-// Arbitrary but FIXED namespace, private to dsv4shim's opencode converter (not one of the
+// Arbitrary but FIXED namespace, private to mmclaude's opencode converter (not one of the
 // standard RFC4122 namespaces — this tool has no reason to share one). Any constant 16-byte
 // value works; what matters is that it never changes, since changing it would silently
 // re-derive different UUIDs for every already-imported session on the next run.
@@ -76,13 +76,13 @@ export function deterministicUuid(seed) {
 
 /**
  * Encode a path the way Claude Code's own client does, so an imported session lands in the
- * exact directory the real client will look under when you cd there and run `claude`/`dsv4shim
+ * exact directory the real client will look under when you cd there and run `claude`/`mmclaude
  * run` — otherwise it only ever resumes by explicit UUID and never appears in the picker.
  *
  * CONFIRMED LIVE BUG, fixed 2026-08-13: the previous version stripped the drive-letter colon
  * and collapsed runs of slashes into a single '-', producing `C-Users-fr0dz3e-...` for
  * `C:\Users\fr0dz3e\...`. Real Claude Code directories on the same machine (copied in
- * byte-for-byte via dsv4shim-import, never re-encoded) are `C--Users-fr0dz3e-...` — TWO dashes,
+ * byte-for-byte via mmclaude-import, never re-encoded) are `C--Users-fr0dz3e-...` — TWO dashes,
  * because the real encoder replaces EACH separator character individually (':' -> '-', then
  * '\' -> '-' right after it) rather than collapsing runs or dropping the colon. Every
  * opencode-imported session was therefore written under a directory name Claude's own client
@@ -136,7 +136,7 @@ function convertParts(parts, unknownTypes) {
       default:
         unknownTypes.add(part.type);
         // Never silently drop content of an unrecognised shape — degrade visibly instead,
-        // matching dsv4shim-import's placeholder philosophy for images/documents.
+        // matching mmclaude-import's placeholder philosophy for images/documents.
         content.push({ type: 'text', text: `[opencode part type "${part.type}" — not converted; raw: ${JSON.stringify(part).slice(0, 300)}]` });
     }
   }
@@ -191,7 +191,7 @@ export function convertSession(db, sessionId, { cwd = '/' } = {}) {
       entrypoint: 'cli',
       cwd: directory,
       sessionId: newSessionId,
-      version: '0.0.0-dsv4shim-opencode-import',
+      version: '0.0.0-mmclaude-opencode-import',
       gitBranch: 'HEAD',
     };
 
@@ -280,10 +280,10 @@ export function openDb(dbPath) {
 
 /**
  * Write one convertSession() result to <outDir>/projects/<encoded-cwd>/<sessionId>.jsonl.
- * Shared by this file's own CLI entry point and dsv4shim-setup-sources.mjs's import loop, which
+ * Shared by this file's own CLI entry point and mmclaude-setup-sources.mjs's import loop, which
  * used to duplicate this exact encode-mkdir-write sequence.
  *
- * @param {string} outDir   dsv4shim profile root (NOT the projects dir itself — this appends it)
+ * @param {string} outDir   mmclaude profile root (NOT the projects dir itself — this appends it)
  * @param {{lines: object[], directory: string, sessionId: string}} result
  * @returns {string} the file path written
  */
@@ -300,7 +300,7 @@ export function writeConvertedSession(outDir, result) {
 }
 
 // ------------------------------------------------------------------ CLI entry point
-// dsv4shim-opencode-convert <db-path> [--session <id>] [--out <dir>] [--dry-run]
+// mmclaude-opencode-convert <db-path> [--session <id>] [--out <dir>] [--dry-run]
 
 const isMain = (() => {
   try { return process.argv[1] && import.meta.url === new URL(`file://${path.resolve(process.argv[1])}`).href; }
@@ -311,7 +311,7 @@ if (isMain) {
   const args = process.argv.slice(2);
   const dbPath = args[0];
   if (!dbPath || dbPath.startsWith('--')) {
-    console.error('Usage: dsv4shim-opencode-convert <opencode.db path> [--session <id>] [--out <dir>] [--dry-run]');
+    console.error('Usage: mmclaude-opencode-convert <opencode.db path> [--session <id>] [--out <dir>] [--dry-run]');
     process.exit(1);
   }
   const sessionArg = (() => {

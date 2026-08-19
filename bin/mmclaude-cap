@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# POSIX convenience launcher; the cross-platform implementation lives in mmclaude.mjs.
+set -euo pipefail
+exec node "$(dirname "$0")/mmclaude.mjs" cap "$@"

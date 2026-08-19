@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 /**
- * dsv4shim — portable CLI. One Node entry point so Windows and Linux share the same code; the
+ * mmclaude — portable CLI. One Node entry point so Windows and Linux share the same code; the
  * bash scripts remain as thin Linux conveniences but every command here works on both.
  *
- *   dsv4shim setup            first-time setup: key prompt, probe, profile, autostart
- *   dsv4shim key <provider>   store/replace an API key (deepseek | deepinfra | openrouter)
- *   dsv4shim start|stop|status  manage the shim process
- *   dsv4shim [run] [args...]  launch Claude Code against the profile (imports on first run).
- *                          `run` is implicit -- bare `dsv4shim`, or any args that aren't a known
+ *   mmclaude setup            first-time setup: key prompt, probe, profile, autostart
+ *   mmclaude key minimax      store/replace the MiniMax Token Plan or API key
+ *   mmclaude start|stop|status  manage the shim process
+ *   mmclaude [run] [args...]  launch Claude Code against the profile (imports on first run).
+ *                          `run` is implicit -- bare `mmclaude`, or any args that aren't a known
  *                          subcommand (flags, a prompt), launch it the same way.
- *   dsv4shim cap [amount]     show/set the DeepSeek daily cap
- *   dsv4shim cap vision [amt] show/set the vision daily cap
+ *   mmclaude cap [amount]     show/set the MiniMax daily cap
  *
  * Platform differences are confined to: where the shim's PID/log live, and how it is started
  * in the background (systemd on Linux when available, a detached process otherwise).
@@ -20,14 +19,14 @@ import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
-import { resolveClaude } from './dsv4shim-lib.mjs';
+import { resolveClaude } from './mmclaude-lib.mjs';
 
 const HOME = os.homedir();
 const WIN = process.platform === 'win32';
 const ROOT = path.resolve(import.meta.dirname, '..');
-const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
-const DATA_DIR = process.env.DSV4SHIM_DATA_DIR || path.join(HOME, '.local', 'share', 'dsv4shim');
-const PROFILE_DIR = path.join(HOME, '.dsv4shim');
+const CONFIG_DIR = process.env.MMCLAUDE_CONFIG_DIR || path.join(HOME, '.config', 'mmclaude');
+const DATA_DIR = process.env.MMCLAUDE_DATA_DIR || path.join(HOME, '.local', 'share', 'mmclaude');
+const PROFILE_DIR = process.env.MMCLAUDE_PROFILE_DIR || path.join(HOME, '.mmclaude');
 const PID_FILE = path.join(DATA_DIR, 'shim.pid');
 const LOG_FILE = path.join(DATA_DIR, 'shim.log');
 
@@ -39,12 +38,10 @@ const die = m => { console.error(red(m)); process.exit(1); };
 
 const readJson = (f, d = null) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
 const cfg = () => readJson(path.join(CONFIG_DIR, 'config.json'), {});
-const port = () => process.env.DSV4SHIM_PORT || cfg().port || 8788;
+const port = () => process.env.MMCLAUDE_PORT || cfg().port || 8788;
 
 const PROVIDERS = {
-  deepseek:   { file: 'key',            label: 'DeepSeek',   verify: 'https://api.deepseek.com/user/balance' },
-  deepinfra:  { file: 'deepinfra-key',  label: 'DeepInfra',  verify: 'https://api.deepinfra.com/v1/openai/models' },
-  openrouter: { file: 'openrouter-key', label: 'OpenRouter', verify: 'https://openrouter.ai/api/v1/key' },
+  minimax: { file: 'key', label: 'MiniMax', verify: 'https://www.minimax.io/v1/token_plan/remains' },
 };
 
 // ------------------------------------------------------------- hidden key input
@@ -99,12 +96,12 @@ function shimRunning() {
 
 function systemdAvailable() {
   if (WIN) return false;
-  return spawnSync('systemctl', ['--user', 'is-enabled', 'dsv4shim-shim.service'], { stdio: 'ignore' }).status === 0;
+  return spawnSync('systemctl', ['--user', 'is-enabled', 'mmclaude-shim.service'], { stdio: 'ignore' }).status === 0;
 }
 
 async function health(ms = 1500) {
   try {
-    const r = await fetch(`http://127.0.0.1:${port()}/_dsv4shim/health`, { signal: AbortSignal.timeout(ms) });
+    const r = await fetch(`http://127.0.0.1:${port()}/_mmclaude/health`, { signal: AbortSignal.timeout(ms) });
     return r.ok;
   } catch { return false; }
 }
@@ -112,7 +109,7 @@ async function health(ms = 1500) {
 async function cmdStart({ quiet = false } = {}) {
   if (await health()) { if (!quiet) console.log('shim already running'); return true; }
   if (systemdAvailable()) {
-    spawnSync('systemctl', ['--user', 'start', 'dsv4shim-shim.service'], { stdio: 'ignore' });
+    spawnSync('systemctl', ['--user', 'start', 'mmclaude-shim.service'], { stdio: 'ignore' });
   } else {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const out = fs.openSync(LOG_FILE, 'a');
@@ -130,7 +127,7 @@ async function cmdStart({ quiet = false } = {}) {
 }
 
 function cmdStop() {
-  if (systemdAvailable()) { spawnSync('systemctl', ['--user', 'stop', 'dsv4shim-shim.service'], { stdio: 'inherit' }); return; }
+  if (systemdAvailable()) { spawnSync('systemctl', ['--user', 'stop', 'mmclaude-shim.service'], { stdio: 'inherit' }); return; }
   const pid = shimRunning();
   if (!pid) { console.log('shim not running'); return; }
   try { process.kill(pid, WIN ? undefined : 'SIGTERM'); console.log(`stopped (pid ${pid})`); } catch (e) { console.error(e.message); }
@@ -154,37 +151,37 @@ async function cmdStatus() {
  * (fast — 15s is generous, and covers the one-time initial clone if the update cache doesn't
  * exist yet) with no local mutation; the full update (reset + copy + test suite + restart)
  * only runs when one is actually available, with more generous headroom since it only pays
- * that cost on a real update, not every launch. Both timeouts fail SAFE: dsv4shim-update.mjs
+ * that cost on a real update, not every launch. Both timeouts fail SAFE: mmclaude-update.mjs
  * itself already treats "offline" as "keep the installed version" (exit 0, not an error), and
  * a killed/timed-out check here is treated identically — this must never block using the tool.
  */
 function autoUpdateCheck() {
-  const updater = path.join(DATA_DIR, 'bin', 'dsv4shim-update.mjs');
+  const updater = path.join(DATA_DIR, 'bin', 'mmclaude-update.mjs');
   if (!fs.existsSync(updater)) return;   // portable/tarball install predating the updater
   const check = spawnSync(process.execPath, [updater, '--check'], { stdio: 'ignore', timeout: 15000 });
   if (check.status === 10) {
-    console.error('dsv4shim: update available — applying...');
+    console.error('mmclaude: update available — applying...');
     const apply = spawnSync(process.execPath, [updater], { stdio: 'inherit', timeout: 120000 });
-    if (apply.status !== 0) console.error('dsv4shim: auto-update failed; continuing with the current version');
+    if (apply.status !== 0) console.error('mmclaude: auto-update failed; continuing with the current version');
   }
 }
 
 // ------------------------------------------------------------------------ run
 
 async function cmdRun(rest) {
-  if (!fs.existsSync(path.join(CONFIG_DIR, 'key'))) die("No DeepSeek key stored. Run: dsv4shim setup");
-  if (!fs.existsSync(path.join(PROFILE_DIR, 'settings.json'))) die('Profile missing. Run: dsv4shim setup');
+  if (!fs.existsSync(path.join(CONFIG_DIR, 'key'))) die("No MiniMax key stored. Run: mmclaude setup");
+  if (!fs.existsSync(path.join(PROFILE_DIR, 'settings.json'))) die('Profile missing. Run: mmclaude setup');
 
   autoUpdateCheck();
   if (!await cmdStart({ quiet: true })) process.exit(1);
 
   // Pull across memories, transcripts and permissions (scrubbed so they resume). --source
-  // <path> propagates into the importer (handled below as a dsv4shim flag, then stripped before
+  // <path> propagates into the importer (handled below as a mmclaude flag, then stripped before
   // we hand the rest to claude).
   //
   // This used to be gated behind a one-time .imported marker — ran exactly once, ever, so any
-  // Claude Code session created after the very first `dsv4shim run` was never picked up again.
-  // dsv4shim-import is incremental by default now (a per-file manifest skips anything unchanged),
+  // Claude Code session created after the very first `mmclaude run` was never picked up again.
+  // mmclaude-import is incremental by default now (a per-file manifest skips anything unchanged),
   // so it's cheap enough to run --auto on every launch instead; --quiet keeps a normal launch
   // silent when nothing changed. A failed import no longer aborts the whole run — you can
   // still use the tool with whatever was imported last time.
@@ -192,18 +189,18 @@ async function cmdRun(rest) {
   const srcDefault = path.join(HOME, '.claude', 'projects');
   if (fs.existsSync(srcDefault) || sourceArg.length > 0) {
     const r = spawnSync(process.execPath,
-      [path.join(ROOT, 'bin', 'dsv4shim-import'), '--auto', '--quiet', ...sourceArg],
+      [path.join(ROOT, 'bin', 'mmclaude-import'), '--auto', '--quiet', ...sourceArg],
       { stdio: 'inherit' });
-    if (r.status !== 0) console.error('dsv4shim: import failed; continuing without it');
+    if (r.status !== 0) console.error('mmclaude: import failed; continuing without it');
   }
 
   // Resolve the Claude Code binary. On Windows this honours PATHEXT (so a `claude.exe`
   // installed outside npm works), and falls back to common install locations if PATH
-  // is unset. See bin/dsv4shim-lib.mjs for the resolver.
+  // is unset. See bin/mmclaude-lib.mjs for the resolver.
   let claude;
   try { claude = resolveClaude(); }
   catch (e) { die(e.message); }
-  // Filter --source out of the args we hand to claude (it's a dsv4shim flag, not a claude one).
+  // Filter --source out of the args we hand to claude (it's a mmclaude flag, not a claude one).
   const claudeArgs = stripSource(rest);
 
   // Build the child env. Start from the parent env, then explicitly UNSET the two
@@ -226,7 +223,7 @@ async function cmdRun(rest) {
   childEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
 
   // CONFIRMED LIVE BUG, fixed 2026-08-13: resolveClaude() deliberately returns the bare
-  // string 'claude' on Windows (see dsv4shim-lib.mjs) so cmd.exe's PATHEXT resolves it to
+  // string 'claude' on Windows (see mmclaude-lib.mjs) so cmd.exe's PATHEXT resolves it to
   // claude.cmd/.exe -- but that resolution is a SHELL feature. Without a shell here, Node
   // calls CreateProcess directly (bypassing cmd.exe entirely), so a bare 'claude' with no
   // bundled binary present threw `spawn claude ENOENT` on every Windows machine using a
@@ -270,36 +267,33 @@ function stripSource(argv) {
 // ------------------------------------------------------------------------ caps
 
 function capCmd(rest) {
-  const vision = rest[0] === 'vision';
-  const amount = vision ? rest[1] : rest[0];
-  const file = path.join(CONFIG_DIR, vision ? 'vision-cap' : 'cap');
-  const fallback = vision ? (cfg().vision?.dailyCapUsd ?? 1.5) : (cfg().cap?.dailyUsd ?? 5);
+  const amount = rest[0];
+  const file = path.join(CONFIG_DIR, 'cap');
+  const fallback = cfg().cap?.dailyUsd ?? 0;
   if (amount === undefined) {
     const cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim() : String(fallback);
-    console.log(`${vision ? 'Vision' : 'DeepSeek'} daily cap: $${cur} (UTC day)`);
+    console.log(`MiniMax local dollar cap: $${cur} (Token Plan quota is authoritative)`);
     return;
   }
   if (!/^\d+(\.\d+)?$/.test(amount)) die(`'${amount}' is not a non-negative number`);
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   fs.writeFileSync(file, amount);
   if (parseFloat(amount) === 0) console.log(yel('0 is read as DISABLED (unlimited), not a $0 limit. Use 0.01 for a hard stop.'));
-  else console.log(`${vision ? 'Vision' : 'DeepSeek'} daily cap set to $${amount}.`);
+  else console.log(`MiniMax local dollar cap set to $${amount}. Token Plan usage remains authoritative.`);
 }
 
 // ------------------------------------------------------------------------ main
 
 function help(topic) {
   const H = {
-    setup: `${bold('dsv4shim setup')} [--rekey] [--no-vision] [--reprobe]
+    setup: `${bold('mmclaude setup')} [--rekey] [--reprobe]
 
-First-time setup. Prompts for your DeepSeek API key (hidden — never echoed, never in argv or
-shell history), offers an optional DeepInfra key for screenshots, probes the endpoint to
-calibrate itself against what it actually does, writes the isolated Claude Code profile, and
-starts the shim.
+First-time setup. Prompts for your MiniMax API key (hidden — never echoed, never in argv or
+shell history), probes the MiniMax endpoint, writes the isolated Claude Code profile, and starts
+the shim. MiniMax M3 receives image and video blocks natively; no vision sidecar key is needed.
 
-  --rekey       replace the stored DeepSeek key (also re-probes — a new key/account could
+  --rekey       replace the stored MiniMax key (also re-probes — a new key/account could
                 behave differently)
-  --no-vision   skip the DeepInfra prompt entirely
   --reprobe     force a fresh endpoint probe even if a cached result already exists
 
 The probe (a few cents, but several minutes — it times real API calls at every effort level)
@@ -308,87 +302,76 @@ by default instead of re-measuring something that hasn't changed.
 
 Safe to re-run: an existing config.json is never overwritten.`,
 
-    key: `${bold('dsv4shim key <provider>')}
+    key: `${bold('mmclaude key <provider>')}
 
 Store or replace an API key. Input is hidden and the key is verified against the provider
 immediately, so a mangled paste fails now rather than at first use.
 
-  deepseek     required — the coding model
-  deepinfra    optional — vision, for screenshots. DeepSeek cannot accept images, so they are
-               transcribed to text first. Without it, images degrade to a clear note.
-  openrouter   optional — alternative vision provider
+  minimax     required — the MiniMax Token Plan or standard API key
 
-Keys are written 0600 into ~/.config/dsv4shim/ and never enter Claude Code's environment;
+Keys are written 0600 into ~/.config/mmclaude/ and never enter Claude Code's environment;
 Claude Code authenticates to the local shim with a separate generated sentinel.`,
 
-    run: `${bold('dsv4shim run')} [claude arguments...]  (also just ${bold('dsv4shim')} -- 'run' is the default)
+    run: `${bold('mmclaude run')} [claude arguments...]  (also just ${bold('mmclaude')} -- 'run' is the default)
 
-Launch Claude Code against the DeepSeek profile. Everything after 'run' is passed through:
+Launch Claude Code against the MiniMax profile. Everything after 'run' is passed through:
 
-  dsv4shim                               normal session -- same as 'dsv4shim run'
-  dsv4shim run --effort ultracode        xhigh effort + workflow orchestration
-  dsv4shim run --resume                  resume this directory's most recent session
-  dsv4shim run -p "explain this repo"    one-shot
+  mmclaude                               normal session -- same as 'mmclaude run'
+  mmclaude run --effort ultracode        xhigh effort + workflow orchestration
+  mmclaude run --resume                  resume this directory's most recent session
+  mmclaude run -p "explain this repo"    one-shot
 
 Imported and prior sessions show up the normal Claude Code way -- the in-session switcher
 (left arrow) and --resume both read the same history; nothing special is needed to reach them.
 
 Starts the shim if it is not already up. On first run, imports your existing memories,
-transcripts and permissions from ~/.claude (see dsv4shim-import).
+transcripts and permissions from ~/.claude (see mmclaude-import).
 
-Effort is chosen per task: background calls run with thinking off, routine turns at high,
-detected-hard turns at ultra, and 'ultrathink' or ultracode at max. A level you set
-explicitly with /effort is never overridden.
+Effort is chosen per task: background calls run with thinking off; routine and hard turns use
+MiniMax M3 adaptive thinking. The client-facing effort level is retained for routing and usage
+reports even though M3 exposes thinking as an on/off control.
 
-Screenshots: say what you need from the image, or write 'VISION: <what to look for>', and the
-transcription is directed accordingly.`,
+Screenshots and supported video blocks are passed directly to MiniMax M3.`,
 
-    cap: `${bold('dsv4shim cap')} [amount] | ${bold('dsv4shim cap vision')} [amount]
+    cap: `${bold('mmclaude cap')} [amount]
 
-Daily spend caps, enforced per provider on a rolling UTC day. With no amount, shows the
-current cap.
+Optional local dollar cap. It is disabled by default because MiniMax Token Plan quota is the
+authoritative limit. With no amount, shows the current local cap.
 
-  dsv4shim cap              show the DeepSeek cap
-  dsv4shim cap 10           set it to $10/day
-  dsv4shim cap vision 3     set the vision cap to $3/day
+  mmclaude cap              show the MiniMax cap
+  mmclaude cap 10           set it to $10/day
+Note: 0 means DISABLED (unlimited).`,
 
-At the cap the shim refuses new requests with a clear error rather than a retryable status.
-Cached image descriptions keep working past the vision cap, since replaying them costs nothing.
-
-Note: 0 means DISABLED (unlimited), not a $0 limit. For a hard stop use 0.01.`,
-
-    status: `${bold('dsv4shim status')}
+    status: `${bold('mmclaude status')}
 
 Shows whether the shim is running, how it is started (systemd where available, otherwise on
-demand from 'dsv4shim run'), and which provider keys are stored. Never prints key material.`,
+demand from 'mmclaude run'), and which provider keys are stored. Never prints key material.`,
   };
   if (topic && H[topic]) { console.log('\n' + H[topic] + '\n'); return; }
   console.log(`
-${bold('dsv4shim')} — Claude Code driven by DeepSeek V4 Flash 0731
+${bold('mmclaude')} — Claude Code driven by MiniMax M3 (native multimodal)
 
 ${bold('SETUP')}
-  dsv4shim setup                  first-time setup: key, probe, profile, autostart
-  dsv4shim key <provider>         store a key (${Object.keys(PROVIDERS).join(', ')})
+  mmclaude setup                  first-time setup: key, probe, profile, autostart
+  mmclaude key <provider>         store a key (${Object.keys(PROVIDERS).join(', ')})
 
 ${bold('USE')}
-  dsv4shim run [claude args]      launch Claude Code against the profile
-  dsv4shim run --effort ultracode full fan-out
-  dsv4shim run --resume           resume this directory's last session
+  mmclaude run [claude args]      launch Claude Code against the profile
+  mmclaude run --effort ultracode full fan-out
+  mmclaude run --resume           resume this directory's last session
 
-${bold('SPEND')}
-  dsv4shim cap [amount]           DeepSeek daily cap        (default $5)
-  dsv4shim cap vision [amount]    vision daily cap          (default $1.50)
-  dsv4shim-usage                  spend, burn rate, balance
-  dsv4shim-usage --reconcile      cross-check the ledger against balance drawdown
+${bold('USAGE')}
+  mmclaude cap [amount]           optional local dollar cap (Token Plan is authoritative)
+  mmclaude-usage                  token usage, burn rate, live Token Plan snapshot
 
 ${bold('SERVICE')}
-  dsv4shim start | stop | status  manage the local shim
-  dsv4shim-import [--force]       re-import memories/transcripts from ~/.claude
+  mmclaude start | stop | status  manage the local shim
+  mmclaude-import [--force]       re-import memories/transcripts from ~/.claude
 
 ${bold('HELP')}
-  dsv4shim help <command>         detail on setup, key, run, cap, status
+  mmclaude help <command>         detail on setup, key, run, cap, status
 
-Your normal 'claude' is untouched: this uses a separate profile at ~/.dsv4shim and never
+Your normal 'claude' is untouched: this uses a separate profile at ~/.mmclaude and never
 reads your Anthropic credentials.
 `);
 }
@@ -396,10 +379,10 @@ reads your Anthropic credentials.
 const KNOWN_COMMANDS = ['key', 'start', 'stop', 'status', 'run', 'cap', 'import', 'setup', 'help'];
 const HELP_FLAGS = ['help', '--help', '-h', '-help'];
 const [rawCmd, ...rawRest] = process.argv.slice(2);
-// Bare `dsv4shim` (no subcommand), or any first token that isn't one of dsv4shim's OWN literal
+// Bare `mmclaude` (no subcommand), or any first token that isn't one of mmclaude's OWN literal
 // subcommand words, means "launch Claude Code" -- the whole point of this tool day-to-day.
-// That includes a genuine typo of a subcommand ('dsv4shim ruun') -- it gets forwarded to claude
-// as an argument and claude reports the unrecognised-argument error itself, rather than dsv4shim
+// That includes a genuine typo of a subcommand ('mmclaude ruun') -- it gets forwarded to claude
+// as an argument and claude reports the unrecognised-argument error itself, rather than mmclaude
 // needing its own duplicate notion of what a "valid" trailing argument looks like.
 const looksLikeRunArgs = !HELP_FLAGS.includes(rawCmd) &&
   (rawCmd === undefined || rawCmd.startsWith('-') || !KNOWN_COMMANDS.includes(rawCmd));
@@ -412,22 +395,22 @@ switch (cmd) {
   case 'run':    await cmdRun(rest); break;
   case 'cap':    capCmd(rest); break;
   case 'import': {
-    const r = spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4shim-import'), ...rest], { stdio: 'inherit' });
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'bin', 'mmclaude-import'), ...rest], { stdio: 'inherit' });
     process.exit(r.status ?? 0);
     break;
   }
   case 'setup':
     // CONFIRMED LIVE BUG, fixed 2026-08-13: only cmdRun() called autoUpdateCheck(), so
-    // `dsv4shim setup` (no prior `dsv4shim run` on this machine — the exact shape of a fresh
+    // `mmclaude setup` (no prior `mmclaude run` on this machine — the exact shape of a fresh
     // install) could run whatever code happened to be on disk at that moment, missing a
     // fix that landed on GitHub in between. Confirmed on Work-PC: a reroute ran against
-    // stale bin/dsv4shim-setup.mjs, silently missing the statusLine/effortLevel/deny-list
+    // stale bin/mmclaude-setup.mjs, silently missing the statusLine/effortLevel/deny-list
     // extras a slightly newer commit had already added (env alone still worked, since
     // that part of the code was unchanged) -- required a manual re-apply to fix. Setup
-    // is exactly the command a fresh install runs before ever calling `dsv4shim run` once,
+    // is exactly the command a fresh install runs before ever calling `mmclaude run` once,
     // so it needs its own update check, not a reliance on run's.
     autoUpdateCheck();
-    spawnSync(process.execPath, [path.join(ROOT, 'bin', 'dsv4shim-setup.mjs'), ...rest], { stdio: 'inherit' });
+    spawnSync(process.execPath, [path.join(ROOT, 'bin', 'mmclaude-setup.mjs'), ...rest], { stdio: 'inherit' });
     break;
   case 'help': case '--help': case '-h': case '-help':
     help(rest[0]); break;

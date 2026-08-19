@@ -3,7 +3,7 @@
  * Cross-platform first-time setup: key, probe, profile, autostart.
  *
  * On Linux with systemd this installs a --user unit. Elsewhere (Windows, or a systemd-less
- * Linux) the shim is started on demand by `dsv4shim run`, which is why there is no service to
+ * Linux) the shim is started on demand by `mmclaude run`, which is why there is no service to
  * install there — one less thing to break, at the cost of a ~1s first launch.
  */
 import fs from 'node:fs';
@@ -14,9 +14,11 @@ import { spawnSync } from 'node:child_process';
 const HOME = os.homedir();
 const WIN = process.platform === 'win32';
 const ROOT = path.resolve(import.meta.dirname, '..');
-const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
-const DATA_DIR = process.env.DSV4SHIM_DATA_DIR || path.join(HOME, '.local', 'share', 'dsv4shim');
-const PROFILE_DIR = path.join(HOME, '.dsv4shim');
+const CONFIG_DIR = process.env.MMCLAUDE_CONFIG_DIR || path.join(HOME, '.config', 'mmclaude');
+const DATA_DIR = process.env.MMCLAUDE_DATA_DIR || path.join(HOME, '.local', 'share', 'mmclaude');
+// Test and portable installs can provide an isolated profile without touching the user's
+// normal Claude settings or the default ~/.mmclaude directory.
+const PROFILE_DIR = process.env.MMCLAUDE_PROFILE_DIR || path.join(HOME, '.mmclaude');
 
 const bold = s => `\x1b[1m${s}\x1b[0m`;
 const yel = s => `\x1b[33m${s}\x1b[0m`;
@@ -39,31 +41,19 @@ const SENTINEL = fs.readFileSync(sentinelPath, 'utf8').trim();
 
 // key
 if (!fs.existsSync(path.join(CONFIG_DIR, 'key')) || process.argv.includes('--rekey')) {
-  const r = spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'key', 'deepseek'], { stdio: 'inherit' });
+  const r = spawnSync(node, [path.join(ROOT, 'bin', 'mmclaude.mjs'), 'key', 'minimax'], { stdio: 'inherit' });
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 if (!fs.readFileSync(path.join(CONFIG_DIR, 'key'), 'utf8').trim()) { console.error('No key stored.'); process.exit(1); }
 
-// DeepInfra is optional: it only powers screenshots. Machines that never paste images do not
-// need it, and skipping leaves image handling to degrade with a clear note rather than fail.
-if (!fs.existsSync(path.join(CONFIG_DIR, 'deepinfra-key')) && !process.argv.includes('--no-vision')) {
-  console.log(`\n${bold('Screenshots (optional)')}`);
-  console.log('DeepSeek cannot accept images, so screenshots are transcribed by a vision model');
-  console.log('on DeepInfra. Skip this if you will not paste screenshots on this machine —');
-  console.log('you can add it later with: dsv4shim key deepinfra\n');
-  const rl = (await import('node:readline')).createInterface({ input: process.stdin, output: process.stdout });
-  const want = await new Promise(res => rl.question('Add a DeepInfra key now? [y/N] ', a => { rl.close(); res(a.trim().toLowerCase()); }));
-  if (want === 'y' || want === 'yes') {
-    spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'key', 'deepinfra'], { stdio: 'inherit' });
-  } else {
-    console.log(yel('Skipped — screenshots will report that vision is unconfigured.'));
-  }
-}
+console.log(`\n${bold('Native multimodal enabled')}`);
+console.log('MiniMax M3 receives supported image and video blocks directly through its Anthropic-compatible API.');
+console.log('No separate vision key or sidecar is used.');
 
 // probe — calibrates the shim against what the endpoint actually does. Results are cached to
 // probe-results.json and the shim reads them at startup (falling back to documented defaults
-// if the file is missing) — genuinely needed on first setup (DeepSeek's own docs contradict
-// each other on the exact response shape), but re-measuring it on EVERY re-run of `dsv4shim
+// if the file is missing) — genuinely needed on first setup (MiniMax's own docs contradict
+// each other on the exact response shape), but re-measuring it on EVERY re-run of `mmclaude
 // setup` was pure waste: the slow part (the effort ladder) makes 6 real, deliberately
 // slow-at-high-effort API calls purely to TIME them, several minutes each — a user re-running
 // setup just to pick up a new feature (e.g. reroute) had no way to skip 15-20 minutes of
@@ -82,10 +72,10 @@ if (needsProbe) {
 
 // profile
 const port = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).port || 8788;
-// Cross-platform on every OS — see dsv4shim-statusline.mjs's header for why this replaced the
+// Cross-platform on every OS — see mmclaude-statusline.mjs's header for why this replaced the
 // old bash+curl statusline.sh (that script never ran on Windows, which has no guaranteed
 // POSIX shell, so every Windows install silently missed the cost display entirely).
-const statusline = { type: 'command', command: `node "${path.join(ROOT, 'bin', 'dsv4shim-statusline.mjs')}"`, refreshInterval: 10 };
+const statusline = { type: 'command', command: `node "${path.join(ROOT, 'bin', 'mmclaude-statusline.mjs')}"`, refreshInterval: 10 };
 
 // deny-list.sh ships with the package (a PreToolUse guardrail — bypassPermissions mode has
 // no other check on destructive commands) but never overwrite a hand-tuned copy, matching
@@ -101,14 +91,14 @@ const settings = {
   env: {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     ANTHROPIC_AUTH_TOKEN: SENTINEL,
-    ANTHROPIC_MODEL: 'deepseek-v4-flash',
-    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-flash',
-    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash',
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash-bg',
-    ANTHROPIC_SMALL_FAST_MODEL: 'deepseek-v4-flash-bg',
-    CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-v4-flash-sub',
-    ANTHROPIC_CUSTOM_MODEL_OPTION: 'deepseek-v4-flash',
-    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'DeepSeek V4 Flash 0731',
+    ANTHROPIC_MODEL: 'mmclaude-m3-default',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'mmclaude-m3-thinking',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m2.7-thinking',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mmclaude-m2.7-highspeed-thinking',
+    ANTHROPIC_SMALL_FAST_MODEL: 'mmclaude-m2.5-background',
+    CLAUDE_CODE_SUBAGENT_MODEL: 'mmclaude-m3-subagent',
+    ANTHROPIC_CUSTOM_MODEL_OPTION: 'mmclaude-m3-thinking',
+    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'MiniMax M3',
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
     CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: '1',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -121,7 +111,7 @@ const settings = {
     CLAUDE_CODE_DISABLE_FAST_MODE: '1',
     CLAUDE_CODE_TWO_STAGE_CLASSIFIER: '0',
     CLAUDE_CODE_SKIP_FAST_MODE_NETWORK_ERRORS: '1',
-    CLAUDE_CODE_BG_CLASSIFIER_MODEL: 'deepseek-v4-flash-bg',
+    CLAUDE_CODE_BG_CLASSIFIER_MODEL: 'mmclaude-m2.5-background',
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: '384000',
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '600000',
@@ -155,7 +145,7 @@ if (!fs.existsSync(sPath)) {
   fs.writeFileSync(sPath, JSON.stringify(settings, null, 2) + '\n');
   console.log(bold(`Wrote ${sPath}`));
 } else {
-  // Re-running setup (a "reinstall", or picking up a new dsv4shim version's defaults) used to
+  // Re-running setup (a "reinstall", or picking up a new mmclaude version's defaults) used to
   // blindly overwrite this file, silently destroying anything hand-tuned in it — including,
   // on at least one box, the statusLine and deny-list hook wiring themselves, which existed
   // there only because an earlier session added them directly rather than through this
@@ -217,9 +207,9 @@ try { fs.chmodSync(sPath, 0o600); } catch { /* Windows */ }   // embeds the sent
 if (!WIN && spawnSync('systemctl', ['--user', '--version'], { stdio: 'ignore' }).status === 0) {
   const unitDir = path.join(HOME, '.config', 'systemd', 'user');
   fs.mkdirSync(unitDir, { recursive: true });
-  fs.writeFileSync(path.join(unitDir, 'dsv4shim-shim.service'),
+  fs.writeFileSync(path.join(unitDir, 'mmclaude-shim.service'),
 `[Unit]
-Description=dsv4shim shim (Claude Code -> DeepSeek V4 Flash)
+Description=mmclaude shim (Claude Code -> MiniMax M3)
 After=network-online.target
 
 [Service]
@@ -232,33 +222,33 @@ RestartSec=2
 WantedBy=default.target
 `);
   spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
-  spawnSync('systemctl', ['--user', 'enable', '--now', 'dsv4shim-shim.service'], { stdio: 'ignore' });
+  spawnSync('systemctl', ['--user', 'enable', '--now', 'mmclaude-shim.service'], { stdio: 'ignore' });
   console.log('systemd --user service installed and started');
 } else {
-  console.log(yel('No systemd — the shim starts on demand when you run `dsv4shim run`.'));
+  console.log(yel('No systemd — the shim starts on demand when you run `mmclaude run`.'));
 }
 
-spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'start'], { stdio: 'inherit' });
+spawnSync(node, [path.join(ROOT, 'bin', 'mmclaude.mjs'), 'start'], { stdio: 'inherit' });
 
 // ------------------------------------------------------ multi-source import picker
 // Three possible sources, any combination present: Claude Code CLI, Claude Desktop, and
-// opencode. See bin/dsv4shim-sources.mjs's header for exactly what each one is and why
+// opencode. See bin/mmclaude-sources.mjs's header for exactly what each one is and why
 // claude-cli/claude-desktop are handled together (they share ~/.claude/projects — Desktop
 // embeds the real CLI rather than having its own transcript format).
 //
 // Per source, four dispositions, asked INDIVIDUALLY — never assumed, never global:
 //   leave   nothing happens
-//   copy    imported into dsv4shim; source keeps its own copy untouched
-//   move    imported into dsv4shim, then scrubbed from the source (source stays installed,
+//   copy    imported into mmclaude; source keeps its own copy untouched
+//   move    imported into mmclaude, then scrubbed from the source (source stays installed,
 //           minus that history)
 //   remove  copy + scrub, then remove the source itself. For claude-cli this means bundling
-//           the binary privately into dsv4shim and deleting Anthropic credentials — never
-//           literally uninstalling it, since dsv4shim cannot run without SOME Claude Code
+//           the binary privately into mmclaude and deleting Anthropic credentials — never
+//           literally uninstalling it, since mmclaude cannot run without SOME Claude Code
 //           binary. For claude-desktop/opencode it means printing manual uninstall steps —
-//           dsv4shim never runs a third-party uninstaller unattended. See dsv4shim-scrub.mjs's
+//           mmclaude never runs a third-party uninstaller unattended. See mmclaude-scrub.mjs's
 //           header for the full reasoning.
 {
-  const { detectSources } = await import('./dsv4shim-sources.mjs');
+  const { detectSources } = await import('./mmclaude-sources.mjs');
   const sources = detectSources({ home: HOME, env: process.env, platform: process.platform });
   const present = sources.filter(s => s.present);
 
@@ -272,7 +262,7 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'start'], { stdio: 'inh
       const ask = (q) => new Promise(res => rl.question(q, a => res(a.trim().toLowerCase())));
 
       // Axis 3, asked FIRST and framed as the recommended path when a real CLI binary is
-      // present: point the EXISTING install at DeepSeek in place, rather than importing a
+      // present: point the EXISTING install at MiniMax in place, rather than importing a
       // copy into an isolated profile. Nothing gets copied, so the session switcher
       // (left-arrow), background jobs, and memories are already perfect — they're the same
       // real profile, just talking to a different backend. Copy-into-isolated-profile
@@ -287,17 +277,17 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'start'], { stdio: 'inh
       const cliSource = present.find(s => s.id === 'claude-cli');
       let cliRerouted = false;
       if (cliSource?.binary) {
-        console.log(`\n  ${bold('Recommended: point Claude Code CLI directly at DeepSeek')}`);
+        console.log(`\n  ${bold('Recommended: point Claude Code CLI directly at MiniMax')}`);
         console.log('  Keeps the real `claude` command working exactly as it does today — same session');
         console.log('  switcher, same background jobs, same memories, nothing to import — it just never');
         console.log('  bills Anthropic again. Edits its real settings.json in place (backed up first,');
-        console.log('  revertible any time). If you\'d rather keep a completely separate, isolated DeepSeek');
+        console.log('  revertible any time). If you\'d rather keep a completely separate, isolated MiniMax');
         console.log('  profile instead (e.g. to keep the real install untouched for switching back to');
         console.log('  Anthropic later), say no here and you\'ll get the normal copy/move options next.');
-        const rerouteAns = await ask('  Route the existing install through dsv4shim? [Y/n] ');
+        const rerouteAns = await ask('  Route the existing install through mmclaude? [Y/n] ');
         if (rerouteAns[0] !== 'n') {
-          const { buildRerouteEnv, buildRerouteExtras, applyCliReroute } = await import('./dsv4shim-reroute.mjs');
-          const { newBackupDir } = await import('./dsv4shim-scrub.mjs');
+          const { buildRerouteEnv, buildRerouteExtras, applyCliReroute } = await import('./mmclaude-reroute.mjs');
+          const { newBackupDir } = await import('./mmclaude-scrub.mjs');
           const cliSettingsPath = path.join(cliSource.paths.profile, 'settings.json');
           const backupDir = newBackupDir(PROFILE_DIR, 'cli-reroute');
           try {
@@ -308,8 +298,8 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'start'], { stdio: 'inh
             console.log(yel('  Note: any OTHER standalone Claude Code CLI install that reads this same'));
             console.log(yel('  settings.json will also be rerouted — they share one config file.'));
             cliRerouted = true;
-            // The real install now talks to DeepSeek directly -- importing a copy into the
-            // isolated dsv4shim profile too would just be redundant duplication of the same
+            // The real install now talks to MiniMax directly -- importing a copy into the
+            // isolated mmclaude profile too would just be redundant duplication of the same
             // history, so claude-cli's own disposition is implicitly "leave" from here.
             disposition['claude-cli'] = 'leave';
           } catch (e) {
@@ -349,20 +339,20 @@ spawnSync(node, [path.join(ROOT, 'bin', 'dsv4shim.mjs'), 'start'], { stdio: 'inh
       // are NEVER chosen without an interactive human present to confirm them.
       for (const s of present) disposition[s.id] = 'copy';
       console.log(yel('  Non-interactive — copying everything found, nothing removed from any source.'));
-      console.log(yel('  Re-run `dsv4shim setup` interactively to choose move/remove instead.'));
+      console.log(yel('  Re-run `mmclaude setup` interactively to choose move/remove instead.'));
     }
 
-    const { applySourceDispositions } = await import('./dsv4shim-setup-sources.mjs');
+    const { applySourceDispositions } = await import('./mmclaude-setup-sources.mjs');
     await applySourceDispositions({ sources: present, disposition, node, ROOT, PROFILE_DIR, DATA_DIR });
   }
 }
 
 console.log(`\n${bold('Setup complete.')}
 
-  dsv4shim run                 launch Claude Code
-  dsv4shim run --effort ultracode
-  dsv4shim status              shim + stored keys
-  dsv4shim cap 10              raise the daily cap
+  mmclaude run                 launch Claude Code
+  mmclaude run --effort ultracode
+  mmclaude status              shim + stored keys
+  mmclaude cap 10              raise the daily cap
 
-  Optional: dsv4shim key deepinfra   enables screenshots (DeepSeek cannot see images)
+  Native multimodal: MiniMax M3 receives image and video blocks directly
 `);

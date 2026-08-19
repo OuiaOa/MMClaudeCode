@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * dsv4shim shim — Claude Code -> DeepSeek V4 Flash 0731
+ * mmclaude shim — Claude Code -> MiniMax V4 Flash 0731
  *
- * Sits between Claude Code and https://api.deepseek.com/anthropic and does the four
+ * Sits between Claude Code and https://api.minimax.com/anthropic and does the four
  * things environment variables cannot:
  *
- *   1. Effort translation.  Claude Code emits low|medium|high|xhigh; DeepSeek accepts
- *      none|low|high|max.  Crucially ultracode == xhigh, which DeepSeek does not define,
+ *   1. Effort translation.  Claude Code emits low|medium|high|xhigh; MiniMax accepts
+ *      none|low|high|max.  Crucially ultracode == xhigh, which MiniMax does not define,
  *      and output_config rejections are in Claude Code's NON-retrying 400 class.
  *      The xhigh->max rewrite is what makes ultracode work.
  *   2. Per-task effort selection (slot defaults + ultrathink + heuristics).
- *   3. Client-side usage ledger.  DeepSeek has no usage/spend API at all.
+ *   3. Client-side usage ledger.  MiniMax has no usage/spend API at all.
  *   4. Model allowlist + daily spend cap.
  *
  * The real API key never enters Claude Code's environment; it lives only here.
@@ -25,8 +25,8 @@ import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 
 const HOME = os.homedir();
-const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
-const DATA_DIR = process.env.DSV4SHIM_DATA_DIR || path.join(HOME, '.local', 'share', 'dsv4shim');
+const CONFIG_DIR = process.env.MMCLAUDE_CONFIG_DIR || path.join(HOME, '.config', 'mmclaude');
+const DATA_DIR = process.env.MMCLAUDE_DATA_DIR || path.join(HOME, '.local', 'share', 'mmclaude');
 
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const KEY_FILE = path.join(CONFIG_DIR, 'key');
@@ -45,7 +45,7 @@ function readJson(file, fallback) {
 
 const cfg = readJson(CONFIG_FILE, null);
 if (!cfg) {
-  console.error(`[dsv4shim] FATAL: cannot read ${CONFIG_FILE}`);
+  console.error(`[mmclaude] FATAL: cannot read ${CONFIG_FILE}`);
   process.exit(1);
 }
 
@@ -53,18 +53,18 @@ let API_KEY = '';
 try {
   API_KEY = fs.readFileSync(KEY_FILE, 'utf8').trim();
 } catch {
-  console.error(`[dsv4shim] FATAL: no API key at ${KEY_FILE}. Run: dsv4shim-setup`);
+  console.error(`[mmclaude] FATAL: no API key at ${KEY_FILE}. Run: mmclaude-setup`);
   process.exit(1);
 }
 if (!API_KEY) {
-  console.error(`[dsv4shim] FATAL: ${KEY_FILE} is empty. Run: dsv4shim-setup`);
+  console.error(`[mmclaude] FATAL: ${KEY_FILE} is empty. Run: mmclaude-setup`);
   process.exit(1);
 }
 
 let SENTINEL = '';
 try { SENTINEL = fs.readFileSync(SENTINEL_FILE, 'utf8').trim(); } catch { /* set below */ }
 if (!SENTINEL) {
-  console.error(`[dsv4shim] FATAL: no sentinel at ${SENTINEL_FILE}. Run: dsv4shim-setup`);
+  console.error(`[mmclaude] FATAL: no sentinel at ${SENTINEL_FILE}. Run: mmclaude-setup`);
   process.exit(1);
 }
 
@@ -74,6 +74,7 @@ if (!SENTINEL) {
 const probe = readJson(PROBE_FILE, {});
 const EFFORT_FIELD = probe.effortField || 'output_config';
 const EFFORT_SUPPORTED = probe.effortSupported !== false;
+const IS_MINIMAX = cfg.provider === 'minimax';
 const COUNT_TOKENS_SUPPORTED = probe.countTokensSupported === true;
 
 const VERBOSE = cfg.log?.verbose || process.argv.includes('--verbose');
@@ -81,7 +82,7 @@ const UPSTREAM = new URL(cfg.upstream);
 const UPSTREAM_MOD = UPSTREAM.protocol === 'http:' ? http : https;
 const MODEL = cfg.model;
 
-function log(...a) { console.log(`[dsv4shim ${new Date().toISOString()}]`, ...a); }
+function log(...a) { console.log(`[mmclaude ${new Date().toISOString()}]`, ...a); }
 function vlog(...a) { if (VERBOSE) log(...a); }
 
 // ------------------------------------------------------------------ cap state
@@ -134,25 +135,25 @@ let todayDay = localDay();
 
 /**
  * Which provider a ledger row was billed to. Rows written before providers were distinguished
- * carry no field and are all DeepSeek, so the default is not merely a fallback — it is correct
+ * carry no field and are all MiniMax, so the default is not merely a fallback — it is correct
  * for every historical row.
  */
-function providerOf(row) { return row.provider || 'deepseek'; }
+function providerOf(row) { return row.provider || 'minimax'; }
 
 /** Cost of a row, as a single accessor so cap enforcement and reporting cannot diverge. */
 function costOf(row) { return row.costUsdMax ?? row.costUsd ?? 0; }
 
 /**
  * Today's spend for one provider. This MUST be provider-filtered: vision calls bill DeepInfra
- * but share this ledger, so summing everything charged DeepInfra dollars against the DeepSeek
- * cap AND against the vision cap — double-counted, and reported as DeepSeek spend.
+ * but share this ledger, so summing everything charged DeepInfra dollars against the MiniMax
+ * cap AND against the vision cap — double-counted, and reported as MiniMax spend.
  */
 function spendToday(provider) {
   rollDayIfNeeded();
   return todayRows.reduce((s, r) => (providerOf(r) === provider ? s + costOf(r) : s), 0);
 }
 
-function todaySpend() { return spendToday('deepseek'); }
+function todaySpend() { return spendToday('minimax'); }
 
 function rollDayIfNeeded() {
   const d = localDay();
@@ -194,7 +195,7 @@ function peakMultiplier(date = new Date()) {
  * Peak-surcharge state for display. Reports the multiplier in force right now and when it next
  * changes, plus the windows themselves rendered in the host's own timezone.
  *
- * The windows are DeepSeek's, defined in UTC, and `active` is decided by the same
+ * The windows are MiniMax's, defined in UTC, and `active` is decided by the same
  * peakMultiplier() that prices every request — so peak detection cannot drift with a machine's
  * timezone setting, and a host with the wrong timezone still gets billed and coloured
  * correctly. `localWindows` exists purely so a human reading the statusline can tell when peak
@@ -231,9 +232,9 @@ function peakState(date = new Date()) {
 }
 
 /**
- * Anthropic semantics: input_tokens EXCLUDES cached reads. If DeepSeek's Anthropic-format
+ * Anthropic semantics: input_tokens EXCLUDES cached reads. If MiniMax's Anthropic-format
  * response omits the cache fields we cannot know the split, so we record both bounds and
- * enforce the cap on the pessimistic one. `dsv4shim-usage --reconcile` later solves for the
+ * enforce the cap on the pessimistic one. `mmclaude-usage --reconcile` later solves for the
  * true hit ratio from exact balance drawdown.
  */
 function priceUsage(u, date = new Date(), model = MODEL) {
@@ -286,7 +287,7 @@ function appendLedger(row) {
  * necessarily uses both terms constantly — matched on every single subsequent request for the
  * rest of that conversation, silently replacing every real reply with the canned "approved"
  * mock instead. Caught live on this box: one resumed session's history alone contained
- * "classify_result" 11,315 times and "shouldBlock" 5,654 times (from earlier dsv4shim debugging
+ * "classify_result" 11,315 times and "shouldBlock" 5,654 times (from earlier mmclaude debugging
  * sessions), and every one of its ~34,000 requests over the following day was hijacked by
  * this. Checking the CURRENT request's tool definitions specifically — not history text —
  * cannot false-positive this way: old messages don't retroactively define a tool.
@@ -457,7 +458,7 @@ function modelMapper(body, cfg) {
 /**
  * Desktop/Cowork logical tiers (Fable/Opus/Sonnet/Haiku), each exposed as an external
  * Claude-looking model ID via /v1/models discovery and modelMapper()/resolveModel() above so
- * every one of them ultimately reaches `cfg.model` (deepseek-v4-flash) — never V4 Pro, since
+ * every one of them ultimately reaches `cfg.model` (minimax-v4-flash) — never V4 Pro, since
  * transformRequest() unconditionally force-sets body.model = MODEL right before the upstream
  * call regardless of which tier or slot the request resolved to. These constants are
  * fallbacks only: a config.json predating this feature has neither `desktop.tierModelIds` nor
@@ -506,7 +507,7 @@ function tierOf(model) {
 const BG_SYNTAX_RE = /(?:^|\s)&\s*$|\bnohup\b|\bdaemonize?\b/;
 
 /**
- * DeepSeek's tool-call output frequently defaults to `input.is_background = true` on Bash
+ * MiniMax's tool-call output frequently defaults to `input.is_background = true` on Bash
  * tool_use blocks — even for ordinary one-shot commands. Claude Code then runs user commands
  * in the background unexpectedly. Override to false unless the command itself uses
  * background syntax. Non-Bash blocks and tools that don't request backgrounding are not
@@ -524,7 +525,7 @@ function responseSanitizer(response) {
   }
 }
 
-/** DeepSeek-R1 occasionally embeds <think>...</think> inside tool_use.input as a string. */
+/** MiniMax-R1 occasionally embeds <think>...</think> inside tool_use.input as a string. */
 const THINK_TAG_RE = /<think>[\s\S]*?<\/think>/g;
 
 function responseReasoningSanitizer(response) {
@@ -539,7 +540,7 @@ function responseReasoningSanitizer(response) {
 /**
  * Incremental SSE sanitizer.
  *
- * Replaces a whole-body buffer that held EVERY byte until DeepSeek finished. That cost
+ * Replaces a whole-body buffer that held EVERY byte until MiniMax finished. That cost
  * more than latency: with nothing on the wire, Claude Code's streaming idle timeout was
  * measuring a connection that looked dead for the entire length of a long reasoning
  * turn, which is why this profile needs CLAUDE_STREAM_IDLE_TIMEOUT_MS cranked to 15
@@ -662,7 +663,7 @@ class SseSanitizer {
           }
         } catch { /* not the complete-JSON shape we expected — leave untouched rather than guess */ }
       }
-      // DeepSeek-R1 sometimes leaks <think> spans into tool arguments.
+      // MiniMax-R1 sometimes leaks <think> spans into tool arguments.
       fixed = fixed.replace(THINK_TAG_RE, '');
       if (fixed !== h.json) this.rewrites += 1;
       const sep = h.events[0]?.rawSep || '\n\n';
@@ -714,6 +715,21 @@ function profileFor(name) {
   return (p && typeof p === 'object' && p.model) ? p : null;
 }
 
+// Setup records the models visible to this MiniMax key. If the model list endpoint is
+// unavailable, stay optimistic and let MiniMax return its normal API error rather than
+// silently routing a requested tier to a different model.
+const AVAILABLE_MODELS = Array.isArray(probe.availableModels) && probe.availableModels.length
+  ? new Set(probe.availableModels) : null;
+function effectiveProfileModel(profile) {
+  if (!profile?.model) return MODEL;
+  if (!AVAILABLE_MODELS || AVAILABLE_MODELS.has(profile.model)) return profile.model;
+  if (profile.fallbackModel && AVAILABLE_MODELS.has(profile.fallbackModel)) {
+    vlog(`model ${profile.model} unavailable; using configured fallback ${profile.fallbackModel}`);
+    return profile.fallbackModel;
+  }
+  return profile.model;
+}
+
 /**
  * Resolve a requested model name to its profile: the real upstream model, the default thinking
  * level for that choice, and the ledger slot.
@@ -729,19 +745,19 @@ function resolveModel(requested) {
     if (m.includes(pat)) return { deny: pat };
   }
   const direct = profileFor(m);
-  if (direct) return { model: direct.model, slot: direct.slot || 'main', effort: direct.effort || null, profile: m };
+  if (direct) return { model: effectiveProfileModel(direct), slot: direct.slot || 'main', effort: direct.effort || null, profile: m };
 
   // Desktop/Cowork send a Claude-looking ID rather than a profile name.
   const tier = tierOf(m);
   const viaTier = tier && profileFor(cfg.desktop?.tierProfiles?.[tier]);
   if (viaTier) {
-    return { model: viaTier.model, slot: viaTier.slot || 'main', effort: viaTier.effort || null,
+    return { model: effectiveProfileModel(viaTier), slot: viaTier.slot || 'main', effort: viaTier.effort || null,
              profile: cfg.desktop.tierProfiles[tier] };
   }
 
   const fb = profileFor(cfg.fastModel) || profileFor(cfg.model);
   const fbName = profileFor(cfg.fastModel) ? cfg.fastModel : cfg.model;
-  return { model: fb?.model || MODEL, slot: fb?.slot || 'main', effort: fb?.effort || null,
+  return { model: effectiveProfileModel(fb) || MODEL, slot: fb?.slot || 'main', effort: fb?.effort || null,
            profile: fbName, warn: `unknown model "${m}" -> ${fbName}` };
 }
 
@@ -773,13 +789,13 @@ function decideEffort(body, slot, sessionKey, isClassifierV2 = false, profileEff
   // CONFIRMED LIVE BUG, fixed 2026-08-13: the comment below ("classifiers never need to
   // think") assumed classifier traffic always carries a Haiku-labeled model name and so
   // always lands on slot:background below. That's false for the CURRENT two-stage XML
-  // classifier specifically: it carries the session's own MAIN model name (deepseek-v4-flash
+  // classifier specifically: it carries the session's own MAIN model name (minimax-v4-flash
   // here, not a Haiku alias), so it fell through to full heuristic escalation like any other
   // main-slot request. Caught live: real classifier calls repeatedly hit effort=ultra via the
   // long+keywords heuristic (a large accumulated conversation naturally has long/keyword-rich
   // content), meaning every classification was doing full deep-reasoning work instead of a
   // fast yes/no check -- almost certainly the real reason classifier calls were timing out
-  // under DeepSeek's peak-load latency (a heavy "ultra" response simply takes far longer than
+  // under MiniMax's peak-load latency (a heavy "ultra" response simply takes far longer than
   // a trivial one), not just insufficient retry budget. Force minimal effort for classifier
   // traffic BEFORE any slot/heuristic logic runs, regardless of which slot the model name
   // itself resolved to -- classifierV2 is an orthogonal signal, not tied to slot routing.
@@ -862,15 +878,15 @@ function decideEffort(body, slot, sessionKey, isClassifierV2 = false, profileEff
 // --------------------------------------------------------------------- vision
 
 /**
- * DeepSeek's Anthropic endpoint does not accept image or document blocks, so Claude Code
+ * MiniMax's Anthropic endpoint does not accept image or document blocks, so Claude Code
  * cannot show it a screenshot. The shim swaps each image for a text description produced by a
- * vision model, leaving all coding and reasoning with DeepSeek. Requests without images are
+ * vision model, leaving all coding and reasoning with MiniMax. Requests without images are
  * forwarded byte-identically, so nothing about normal traffic changes.
  *
  * Descriptions are cached by image hash and replayed verbatim. That is not merely a cost
  * saving: Claude Code resends the whole conversation every turn, so re-describing would both
  * burn credit and — because VLM output is non-deterministic — mutate the prompt prefix on
- * every turn, forfeiting DeepSeek's 50x cache-hit discount for the entire conversation.
+ * every turn, forfeiting MiniMax's 50x cache-hit discount for the entire conversation.
  */
 const VISION = cfg.vision || {};
 const VISION_CACHE_DIR = path.join(DATA_DIR, 'vision-cache');
@@ -969,7 +985,7 @@ const VISION_MARKER_RE = /VISION:\s*([^\n]{3,400})/i;
  * That distinction is the whole design. The cache is keyed on image + focus, so if focus came
  * from whatever is being asked right now, the description substituted for an image sitting in
  * older history would change from turn to turn, mutating the prompt prefix and forfeiting
- * DeepSeek's 50x cache-hit discount for the rest of the conversation.
+ * MiniMax's 50x cache-hit discount for the rest of the conversation.
  */
 function deriveFocus(precedingText) {
   if (!precedingText) return '';
@@ -991,7 +1007,7 @@ function visionCap() { return readCapFile(VISION_CAP_FILE, VISION.dailyCapUsd ??
 /**
  * Vision spend for the current UTC day, from the ledger. DeepInfra publishes no balance or
  * usage endpoint — /v1/me carries no billing fields and every billing path 404s — so unlike
- * DeepSeek there is no independent figure to reconcile against. The ledger is the only record,
+ * MiniMax there is no independent figure to reconcile against. The ledger is the only record,
  * which is why the output-token estimate matters: DeepInfra under-reports completion_tokens
  * for proxied models by ~30x, and costing on the reported value would make this cap useless.
  */
@@ -1078,14 +1094,14 @@ async function describeImageUncached(key, mediaType, b64, focus) {
   // figure and all pass a cap that a single one of them would have tripped.
   const spent = visionSpendToday() + visionReserved;
   if (cap > 0 && spent >= cap) {
-    // errCode is the client-facing (and DeepSeek-prompt-facing) text — deliberately static.
+    // errCode is the client-facing (and MiniMax-prompt-facing) text — deliberately static.
     // err carries the live $ figure for the shim's own log only; embedding it in the prompt
     // would make the placeholder a little different on every single call for as long as the
-    // cap stays hit, busting DeepSeek's prompt-prefix cache turn after turn during exactly
+    // cap stays hit, busting MiniMax's prompt-prefix cache turn after turn during exactly
     // the situation (a sustained cap outage) where cost predictability matters most.
     return {
       text: null, cached: false, cost: 0, errCode: 'cap',
-      err: `daily vision cap of $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}); raise with: dsv4shim-cap vision <amount>`,
+      err: `daily vision cap of $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}); raise with: mmclaude-cap vision <amount>`,
     };
   }
 
@@ -1194,7 +1210,7 @@ async function substituteImages(body) {
   // Images arrive at two different depths. A pasted image sits directly in msg.content, but
   // anything the Read tool returns is nested inside a tool_result's own content array — which
   // is by far the common case, since that is how the agent looks at a screenshot. Missing the
-  // nested case lets images reach DeepSeek untouched, and it rejects them.
+  // nested case lets images reach MiniMax untouched, and it rejects them.
   const collect = (arr) => {
     if (!Array.isArray(arr)) return;
     for (let i = 0; i < arr.length; i++) {
@@ -1250,7 +1266,7 @@ async function substituteImages(body) {
         // figure, an HTTP body snippet, a timeout's remaining-ms) that can differ call to
         // call even for the identical underlying failure; embedding that in the prompt would
         // make this placeholder text different on every turn for as long as the failure
-        // persists, busting DeepSeek's prompt-prefix cache turn after turn during exactly the
+        // persists, busting MiniMax's prompt-prefix cache turn after turn during exactly the
         // situation (a sustained outage or a capped day) where staying cache-friendly matters
         // most. The full detail is still logged below for whoever's watching the shim.
         : `[${label} — description unavailable (${visionErrorLabel(d.errCode)}). Ask the user to describe it.]`,
@@ -1284,12 +1300,12 @@ function appendVisionHint(body) {
 }
 
 /**
- * Claude Code's system prompt carries no calendar date and DeepSeek has no clock, so the
+ * Claude Code's system prompt carries no calendar date and MiniMax has no clock, so the
  * model infers "today" from whatever date the transcript last mentioned — or from when the
  * session began. That yields confidently wrong weekday and days-remaining arithmetic, which
  * stops being cosmetic the moment the agent schedules something.
  *
- * Anchored at DAY granularity deliberately. DeepSeek prices a cache hit ~30x below a miss and
+ * Anchored at DAY granularity deliberately. MiniMax prices a cache hit ~30x below a miss and
  * keys the cache on the prompt PREFIX, so a timestamp that moved every minute would re-cache
  * the whole conversation every turn. A value that changes once per local midnight costs one
  * re-cache per day and still fixes the arithmetic. Time-of-day is left out for that reason.
@@ -1330,13 +1346,13 @@ function appendTemporalAnchor(body) {
 }
 
 /**
- * Ultracode fans out far less on DeepSeek than on Anthropic's own models — measured from the
+ * Ultracode fans out far less on MiniMax than on Anthropic's own models — measured from the
  * ledger, a real ultracode run issued 147 subagent requests over 35 minutes but never more
  * than 7 concurrently, and 115 of its dispatch windows contained exactly one. That is a
  * parent emitting one Task block per turn and looping, not a swarm; Claude emits 20+ blocks
  * in a single message. Nothing in this shim throttles it — there is no queue, semaphore or
  * concurrency cap anywhere — so the count is the model's own choice, and the only lever here
- * is to ask for the behaviour explicitly. DeepSeek follows an explicit parallel-tool
+ * is to ask for the behaviour explicitly. MiniMax follows an explicit parallel-tool
  * instruction far more reliably than it self-initiates one.
  *
  * A constant, appended only on ultracode turns: the flip costs one cache miss when ultracode
@@ -1369,7 +1385,7 @@ function transformRequest(body, effort, upstreamModel = MODEL, opts = {}) {
   appendTemporalAnchor(body);
   if (opts.swarm) appendSwarmHint(body);
 
-  // DeepSeek isolates the KV cache per metadata.user_id. Leaving it in fragments the cache
+  // MiniMax isolates the KV cache per metadata.user_id. Leaving it in fragments the cache
   // and forfeits the 50x cache-hit discount, so it is removed after being read for session
   // keying.
   if (cfg.cacheHygiene?.stripUserId && body.metadata) {
@@ -1377,25 +1393,34 @@ function transformRequest(body, effort, upstreamModel = MODEL, opts = {}) {
     if (Object.keys(body.metadata).length === 0) delete body.metadata;
   }
 
-  // cache_control is documented as ignored by DeepSeek; dropping it just shrinks the body.
+  // cache_control is documented as ignored by MiniMax; dropping it just shrinks the body.
   if (cfg.cacheHygiene?.stripCacheControl) {
     stripCacheControl(body.system);
     stripCacheControl(body.messages);
     stripCacheControl(body.tools);
   }
 
-  // budget_tokens is ignored upstream and `adaptive` is not a DeepSeek-known type.
+  // MiniMax M3 uses the Anthropic-compatible `thinking` switch. It does not accept
+  // MiniMax's output_config.effort ladder; preserve the Claude-facing effort level only
+  // in our routing/ledger and map it to M3's adaptive on/off control.
   delete body.thinking;
   delete body.output_config;
   delete body.reasoning;
+
+  if (IS_MINIMAX) {
+    body.thinking = (effort === 'none' || effort === 'low')
+      ? { type: 'disabled' }
+      : { type: 'adaptive' };
+    if (cfg.serviceTier) body.service_tier = cfg.serviceTier;
+  }
 
   // MEASURED 2026-08-06: the endpoint's effort enum is low|medium|high|xhigh|ultra|max.
   // There is NO `none` — sending it returns 400 "unknown variant `none`". Thinking is
   // switched off with thinking:{type:"disabled"} instead, and the effort field must then be
   // omitted entirely rather than set to a placeholder.
-  if (effort === 'none') {
+  if (!IS_MINIMAX && effort === 'none') {
     body.thinking = { type: 'disabled' };
-  } else if (EFFORT_SUPPORTED) {
+  } else if (!IS_MINIMAX && EFFORT_SUPPORTED) {
     body[EFFORT_FIELD] = { effort };
   }
 
@@ -1445,14 +1470,14 @@ const CONTEXT_OVERFLOW_RE = /context length|context_length|too many tokens|maxim
 
 /**
  * Claude Code triggers compact-and-retry by string-matching Anthropic's "prompt is too long".
- * DeepSeek's wording differs, so auto-compact would never fire. Rewrite it in.
+ * MiniMax's wording differs, so auto-compact would never fire. Rewrite it in.
  */
 function rewriteError(status, text) {
   let obj;
   try { obj = JSON.parse(text); } catch { return text; }
   const msg = obj?.error?.message || obj?.message || '';
   if (status === 402) {
-    if (obj.error) obj.error.message = `DeepSeek balance exhausted (HTTP 402). Top up at https://platform.deepseek.com/billing — original: ${msg}`;
+    if (obj.error) obj.error.message = `MiniMax Token Plan quota exhausted (HTTP 402). Check your Token Plan quota or purchased Credits — original: ${msg}`;
     return JSON.stringify(obj);
   }
   if (CONTEXT_OVERFLOW_RE.test(msg) && !/prompt is too long/i.test(msg)) {
@@ -1500,7 +1525,7 @@ function apiError(res, status, message, type = 'invalid_request_error') {
  * truncating the turn.
  */
 function emitStreamError(res, message) {
-  const payload = { type: 'error', error: { type: 'api_error', message: `dsv4shim: ${message}` } };
+  const payload = { type: 'error', error: { type: 'api_error', message: `mmclaude: ${message}` } };
   res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
 }
 
@@ -1539,6 +1564,7 @@ function usageSummary() {
     todayUsdMin: +min.toFixed(6),
     exact,
     capUsd: readCap(),
+    capMode: IS_MINIMAX ? 'minimax-token-plan' : 'local-dollar-cap',
     vision: {
       enabled: !!VISION.enabled,
       model: VISION.model || null,
@@ -1563,8 +1589,14 @@ function usageSummary() {
 // ---------------------------------------------------------------- balance poll
 
 function pollBalance() {
-  const req = https.request(cfg.balanceUrl || 'https://api.deepseek.com/user/balance', {
-    method: 'GET',
+  const endpoint = new URL(cfg.balanceUrl || 'https://www.minimax.io/v1/token_plan/remains');
+  const method = cfg.balanceMethod || 'GET';
+  const req = (endpoint.protocol === 'http:' ? http : https).request({
+    protocol: endpoint.protocol,
+    hostname: endpoint.hostname,
+    port: endpoint.port || (endpoint.protocol === 'http:' ? 80 : 443),
+    path: `${endpoint.pathname}${endpoint.search}`,
+    method,
     headers: { authorization: `Bearer ${API_KEY}`, accept: 'application/json' },
     timeout: 15000,
   }, (res) => {
@@ -1576,8 +1608,8 @@ function pollBalance() {
         const j = JSON.parse(b);
         j._polledAt = new Date().toISOString();
         fs.writeFileSync(BALANCE_FILE, JSON.stringify(j, null, 2));
-        // Append-only history so `dsv4shim-usage --reconcile` can solve for the true cache-hit
-        // ratio from exact balance drawdown when the usage object omits the cache split.
+        // Append a compact history for the local monitor. MiniMax Token Plan usage is not a
+        // dollar balance, so this is a quota snapshot rather than a spend-reconciliation series.
         const info = (j.balance_infos || [])[0];
         if (info) {
           try {
@@ -1589,7 +1621,7 @@ function pollBalance() {
             }) + '\n');
           } catch { /* non-fatal */ }
         }
-        if (j.is_available === false) log('WARN: DeepSeek reports balance NOT available');
+        if (j.is_available === false || j.available === false) log('WARN: MiniMax reports Token Plan quota unavailable');
         else if (info && parseFloat(info.total_balance) < (cfg.balance?.lowBalanceWarnUsd ?? 5)) {
           log(`WARN: low balance ${info.total_balance} ${info.currency}`);
         }
@@ -1608,12 +1640,12 @@ async function handleMessages(req, res, rawBody) {
 
   let body;
   try { body = JSON.parse(rawBody); }
-  catch { return apiError(res, 400, 'dsv4shim: request body is not valid JSON'); }
+  catch { return apiError(res, 400, 'mmclaude: request body is not valid JSON'); }
 
   // ---- NEW: Desktop/Cowork tier detection --------------------------------------
   // Must run BEFORE modelMapper() rewrites body.model, since tierOf() matches against the
   // external, Claude-looking ID the client actually requested (claude-opus-5 etc.), not the
-  // internal deepseek-v4-flash* sentinel modelMapper() replaces it with.
+  // internal minimax-v4-flash* sentinel modelMapper() replaces it with.
   const desktopTier = tierOf(body.model);
 
   // ---- NEW: internal model mapping -------------------------------------------
@@ -1633,7 +1665,7 @@ async function handleMessages(req, res, rawBody) {
   }
   // Current-client classifier: forwarded, but named in the log so the spend is traceable.
   // This profile runs bypassPermissions, so seeing this line at all means the permission
-  // mode changed and DeepSeek is now being billed to answer safety questions per tool call.
+  // mode changed and MiniMax is now being billed to answer safety questions per tool call.
   const classifierV2 = looksLikeClassifierV2(body);
   if (classifierV2) log('auto-mode permission classifier request forwarded upstream (billed)');
 
@@ -1641,7 +1673,7 @@ async function handleMessages(req, res, rawBody) {
   if (resolved.deny) {
     log(`REFUSED model "${body.model}" (matches deny pattern "${resolved.deny}")`);
     return apiError(res, 403,
-      `dsv4shim refuses model "${body.model}". Only ${MODEL} is allowed by this profile ` +
+      `mmclaude refuses model "${body.model}". Only ${MODEL} is allowed by this profile ` +
       `(guard against accidentally billing a more expensive model). Edit denyModelPatterns in ${CONFIG_FILE} to change.`);
   }
   if (resolved.warn) vlog(resolved.warn);
@@ -1652,14 +1684,14 @@ async function handleMessages(req, res, rawBody) {
     log(`CAP HIT: $${spent.toFixed(4)} >= $${cap.toFixed(2)}`);
     // 403 not 429: Claude Code retries 429 with backoff, which would spin.
     return apiError(res, 403,
-      `dsv4shim: daily cap $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}, ${todayDay}). ` +
-      `Raise with: dsv4shim-cap <amount>`, 'permission_error');
+      `mmclaude: daily cap $${cap.toFixed(2)} reached (spent ~$${spent.toFixed(4)}, ${todayDay}). ` +
+      `Raise with: mmclaude-cap <amount>`, 'permission_error');
   }
 
   // null when the session cannot be identified — see ultracodeSessions above.
-  const sessionKey = body?.metadata?.user_id || req.headers['x-dsv4shim-session'] || null;
+  const sessionKey = body?.metadata?.user_id || req.headers['x-mmclaude-session'] || null;
 
-  // Swap any image blocks for text descriptions before DeepSeek sees the request. The user's
+  // Swap any image blocks for text descriptions before MiniMax sees the request. The user's
   // own text is captured first so the vision model knows what the agent is actually looking for.
   // Effort is decided BEFORE images are substituted. Afterwards the "last user text" is the
   // vision model's exhaustive description, which would drive the heuristic and silently
@@ -1674,7 +1706,7 @@ async function handleMessages(req, res, rawBody) {
 
   // ---- NEW: environment sanitizer ---------------------------------------------
   // After images (so we don't break the agent's stated focus on the image) but BEFORE
-  // transformRequest (so the rewritten flags actually reach DeepSeek).
+  // transformRequest (so the rewritten flags actually reach MiniMax).
   environmentSanitizer(body);
 
   // The real model this request is billed against, straight off the resolved profile.
@@ -1693,7 +1725,7 @@ async function handleMessages(req, res, rawBody) {
 
   // Auto-mode's two-stage classifier runs against a hard client-side deadline (60s stage-1
   // budget) and fails CLOSED — a denied tool call, not a retry — when it doesn't get a
-  // response in time. DeepSeek occasionally stalls or drops the connection outright,
+  // response in time. MiniMax occasionally stalls or drops the connection outright,
   // especially in its own announced peak window, and a single 15-minute-timeout attempt
   // burns the whole budget on one shot. Retry classifier requests only, with short
   // per-attempt timeouts, entirely before any bytes reach the client (headersSent stays
@@ -1702,7 +1734,7 @@ async function handleMessages(req, res, rawBody) {
   //
   // CONFIRMED LIVE 2026-08-13: the original 3-attempt/12s budget was not enough headroom.
   // 17 "temporarily unavailable" failures in one real session over ~1 hour, every single one
-  // falling inside DeepSeek's own documented peak window (config's utcWindows [6,10] UTC) --
+  // falling inside MiniMax's own documented peak window (config's utcWindows [6,10] UTC) --
   // a healthy-connection synthetic test succeeded in under 1.5s every time immediately after,
   // confirming the shim/detection logic itself was working correctly; peak-window degradation
   // was simply outlasting 3 quick retries. Widened to 5 attempts at a slightly shorter 10s
@@ -1745,7 +1777,7 @@ async function handleMessages(req, res, rawBody) {
         res.writeHead(status, relayHeaders(upRes.headers));
         const sniff = new UsageSniffer();
         // Forward incrementally — see SseSanitizer. Only tool_use argument fragments are
-        // held; text and thinking reach the terminal as DeepSeek produces them.
+        // held; text and thinking reach the terminal as MiniMax produces them.
         const sanitizer = new SseSanitizer((text) => { res.write(text); });
         upRes.on('data', (chunk) => {
           try { sniff.push(chunk); } catch { /* accounting must never break the stream */ }
@@ -1780,9 +1812,9 @@ async function handleMessages(req, res, rawBody) {
           log(`upstream ${status}: ${out.slice(0, 400)}`);
           // Failures are recorded too. Without this the ledger holds successes only, so
           // "100% status 200" is a tautology rather than evidence of a healthy upstream, and
-          // every 429/503 is invisible to `dsv4shim-usage` — leaving the shim's own stdout as
+          // every 429/503 is invisible to `mmclaude-usage` — leaving the shim's own stdout as
           // the sole trace of, say, a rate-limited fan-out. A non-2xx carries no usage block,
-          // so this prices from byte sizes; DeepSeek does not bill rejected calls, so that
+          // so this prices from byte sizes; MiniMax does not bill rejected calls, so that
           // cost is expected to be noise. The row exists to make the failure countable.
           record(null, resolved.slot, effort, why, status, started, streaming,
                  { outBody, respBytes: buf.length }, upstream.model);
@@ -1819,10 +1851,10 @@ async function handleMessages(req, res, rawBody) {
         return;
       }
       log('upstream error:', e.message);
-      if (!res.headersSent) apiError(res, 502, `dsv4shim: upstream error: ${e.message}`, 'api_error');
+      if (!res.headersSent) apiError(res, 502, `mmclaude: upstream error: ${e.message}`, 'api_error');
       else { try { res.end(); } catch {} }
       // Not recorded: a connection-level failure here means no response was ever received
-      // (DNS/connect/handshake/idle-timeout before any bytes), which DeepSeek has nothing to
+      // (DNS/connect/handshake/idle-timeout before any bytes), which MiniMax has nothing to
       // bill for. The two cases that ARE billable-but-silent (non-JSON 200, mid-stream cut
       // after headers) are recorded at their own sites above/below.
     });
@@ -1857,7 +1889,7 @@ function record(usage, slot, effort, why, status, started, streaming, bytesHint,
     slot,
     effort,
     effortWhy: why,
-    provider: 'deepseek',
+    provider: 'minimax',
     model,
     status,
     streaming,
@@ -1893,9 +1925,9 @@ function scheduleSettlePoll() {
 /**
  * Synthetic Anthropic-shaped /v1/models response for Claude Desktop/Cowork's "Discover
  * Models" gateway probe — see Upgrade Shim.md #3. Desktop expects Claude-looking model IDs,
- * not DeepSeek's own catalogue, so this deliberately does NOT passthrough to the real
+ * not MiniMax's own catalogue, so this deliberately does NOT passthrough to the real
  * upstream (unlike count_tokens etc): it returns exactly the four logical tiers, each of
- * which is guaranteed to reach deepseek-v4-flash only (transformRequest() force-sets
+ * which is guaranteed to reach minimax-v4-flash only (transformRequest() force-sets
  * body.model = MODEL on every /v1/messages request regardless of tier, so there is no path
  * from a discovered tier to V4 Pro or any other upstream model).
  *
@@ -1913,7 +1945,7 @@ function buildModelsResponse() {
     .map((tier) => ({
       type: 'model',
       id: ids[tier],
-      display_name: `${label[tier]} (dsv4shim → DeepSeek V4 Flash)`,
+      display_name: `${label[tier]} (MMClaude → MiniMax)`,
       created_at: now,
     }));
   return { data, has_more: false, first_id: data[0]?.id ?? null, last_id: data[data.length - 1]?.id ?? null };
@@ -1939,7 +1971,7 @@ function passthrough(req, res, rawBody, subpath) {
   });
   upReq.on('timeout', () => upReq.destroy(new Error('timeout')));
   upReq.on('error', (e) => {
-    if (!res.headersSent) apiError(res, 502, `dsv4shim: ${e.message}`, 'api_error');
+    if (!res.headersSent) apiError(res, 502, `mmclaude: ${e.message}`, 'api_error');
   });
   upReq.end(outBody);
 }
@@ -1951,19 +1983,19 @@ const server = http.createServer((req, res) => {
   // (rebinding makes the request same-origin, so the absence of CORS headers would not block it).
   const hostHdr = String(req.headers.host || '');
   const hostOk = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(hostHdr);
-  if (!hostOk) return apiError(res, 403, 'dsv4shim: unexpected Host header', 'permission_error');
+  if (!hostOk) return apiError(res, 403, 'mmclaude: unexpected Host header', 'permission_error');
 
   // Liveness only — deliberately carries no spend, balance or config detail, so the readiness
-  // probe in bin/dsv4shim can stay unauthenticated.
-  if (url.pathname === '/_dsv4shim/health') return sendJson(res, 200, { ok: true });
+  // probe in bin/mmclaude can stay unauthenticated.
+  if (url.pathname === '/_mmclaude/health') return sendJson(res, 200, { ok: true });
 
   // Everything else, including the usage summary (which embeds the account balance), needs the
   // sentinel. The local CLIs read it from the same 0600 file the shim does.
   if (!authOk(req)) {
-    return apiError(res, 401, 'dsv4shim: bad or missing local sentinel token', 'authentication_error');
+    return apiError(res, 401, 'mmclaude: bad or missing local sentinel token', 'authentication_error');
   }
 
-  if (url.pathname === '/_dsv4shim/usage') return sendJson(res, 200, usageSummary());
+  if (url.pathname === '/_mmclaude/usage') return sendJson(res, 200, usageSummary());
 
   // Collect Buffers and decode ONCE at the end. `raw += chunk` decodes each chunk in isolation,
   // which corrupts any multi-byte UTF-8 character that happens to straddle a chunk boundary —
@@ -1977,7 +2009,7 @@ const server = http.createServer((req, res) => {
     size += d.length;
     if (size > maxBytes) {
       oversized = true;
-      apiError(res, 413, 'dsv4shim: request too large');
+      apiError(res, 413, 'mmclaude: request too large');
       // req/res share one socket: destroying req immediately can cut the 413 response off
       // mid-write, so the client sees a bare connection reset instead of the JSON error.
       // Waiting for the response to actually finish sending avoids that race.
@@ -1992,11 +2024,11 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/v1/messages') {
       return handleMessages(req, res, raw).catch((e) => {
         log('handleMessages failed:', e.message);
-        if (!res.headersSent) apiError(res, 500, `dsv4shim: ${e.message}`, 'api_error');
+        if (!res.headersSent) apiError(res, 500, `mmclaude: ${e.message}`, 'api_error');
       });
     }
     // Desktop/Cowork's model-discovery probe. GET only, and deliberately intercepted rather
-    // than passed through to DeepSeek's real /v1/models — see buildModelsResponse(). Any
+    // than passed through to MiniMax's real /v1/models — see buildModelsResponse(). Any
     // other method to this path (unused today) falls through to the existing passthrough
     // behaviour below, unchanged.
     if (url.pathname === '/v1/models' && req.method === 'GET') {
@@ -2005,17 +2037,17 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/v1/messages/count_tokens') {
       if (!COUNT_TOKENS_SUPPORTED) {
         // Claude Code degrades gracefully and estimates locally when this 404s.
-        return apiError(res, 404, 'dsv4shim: count_tokens not supported upstream', 'not_found_error');
+        return apiError(res, 404, 'mmclaude: count_tokens not supported upstream', 'not_found_error');
       }
       return passthrough(req, res, raw, '/v1/messages/count_tokens');
     }
     // Only these paths bypass the guards. Anything else — a trailing slash on /v1/messages, a
     // batch or beta endpoint a future Claude Code build adopts — would otherwise be proxied
-    // verbatim with the real key: billed, unlogged, uncapped and invisible to dsv4shim-usage.
+    // verbatim with the real key: billed, unlogged, uncapped and invisible to mmclaude-usage.
     if (!PASSTHROUGH_ALLOW.has(url.pathname)) {
       log(`REFUSED unguarded path ${req.method} ${url.pathname}`);
       return apiError(res, 404,
-        `dsv4shim: ${url.pathname} is not proxied. Only /v1/messages is accounted for; ` +
+        `mmclaude: ${url.pathname} is not proxied. Only /v1/messages is accounted for; ` +
         `add the path to PASSTHROUGH_ALLOW in shim.mjs if it should be.`, 'not_found_error');
     }
     return passthrough(req, res, raw, url.pathname);
@@ -2023,19 +2055,19 @@ const server = http.createServer((req, res) => {
   req.on('error', () => { try { res.destroy(); } catch {} });
 });
 
-const PORT = parseInt(process.env.DSV4SHIM_PORT || cfg.port || 8788, 10);
+const PORT = parseInt(process.env.MMCLAUDE_PORT || cfg.port || 8788, 10);
 const BIND = cfg.bind || '127.0.0.1';
 
 // Without this, an EADDRINUSE (leftover process still holding the port, or something else
 // bound to it) is an uncaught 'error' event — Node crashes with a raw stack trace instead of
 // a diagnosis, and systemd's RestartSec=2 spins on it forever since the same bind keeps
-// failing. Exit distinctly so the failure is legible in `journalctl --user -u dsv4shim-shim`.
+// failing. Exit distinctly so the failure is legible in `journalctl --user -u mmclaude-shim`.
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
-    console.error(`[dsv4shim] FATAL: port ${PORT} is already in use (another shim instance? ` +
+    console.error(`[mmclaude] FATAL: port ${PORT} is already in use (another shim instance? ` +
       `check: lsof -i tcp:${PORT}). Not retrying — fix the conflict and restart the service.`);
   } else {
-    console.error(`[dsv4shim] FATAL: server error: ${e.message}`);
+    console.error(`[mmclaude] FATAL: server error: ${e.message}`);
   }
   process.exit(1);
 });
@@ -2044,7 +2076,7 @@ server.listen(PORT, BIND, () => {
   log(`listening on http://${BIND}:${PORT} -> ${cfg.upstream}`);
   log(`model=${MODEL} effortField=${EFFORT_FIELD} effortSupported=${EFFORT_SUPPORTED} cap=$${readCap().toFixed(2)}/day`);
   if (!fs.existsSync(PROBE_FILE)) {
-    log('WARN: no probe-results.json — using documented defaults. Run dsv4shim-setup --probe to calibrate.');
+    log('WARN: no probe-results.json — using documented defaults. Run mmclaude-setup --probe to calibrate.');
   }
   // Balance polling costs no tokens (it is an account endpoint, not an inference call), but
   // it is still driven by activity rather than a fixed tick: a sample taken just after a burst

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dsv4shim installer — Linux / macOS / WSL
+# mmclaude installer — Linux / macOS / WSL
 #
 # Detects Node, npm, and Claude Code. If Node itself is missing, attempts to install it via
 # the OS's own package manager (NodeSource+apt/dnf, pacman, or Homebrew) before falling back
@@ -9,14 +9,14 @@
 #
 # Flags:
 #   --no-auto-install    do NOT auto-install Node.js or Claude Code even if missing
-#   --bundle             copy Claude Code's binary into the dsv4shim install, so the
+#   --bundle             copy Claude Code's binary into the mmclaude install, so the
 #                        resulting setup is self-contained and the resolver prefers
 #                        the bundled copy. Has no effect if Claude Code isn't on PATH.
 #   --update             re-copy files even if the destination already exists
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST="${DSV4SHIM_HOME:-$HOME/.local/share/dsv4shim}"
+DEST="${MMCLAUDE_HOME:-$HOME/.local/share/mmclaude}"
 BIN="$HOME/.local/bin"
 
 AUTO_INSTALL=1
@@ -59,7 +59,7 @@ fi
 command -v node >/dev/null || { echo "Node.js v20+ is required. Install from:"; echo "  https://nodejs.org/  (or use your package manager)"; exit 1; }
 node_major="$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')"
 if (( node_major < 20 )); then
-  echo "Node $node_major detected — dsv4shim needs v20 or newer. Please upgrade: https://nodejs.org/"; exit 1
+  echo "Node $node_major detected — mmclaude needs v20 or newer. Please upgrade: https://nodejs.org/"; exit 1
 fi
 
 # ------------------------------------------------------ Claude Code detection
@@ -94,7 +94,7 @@ if [[ "$SRC" != "$DEST" || "$UPDATE" -eq 1 ]]; then
   cp -r "$SRC"/shim.mjs "$SRC"/probe.mjs "$SRC"/test-shim.mjs \
         "$SRC"/config.default.json "$SRC"/bin "$DEST"/
   [[ -d "$SRC/e2e" ]] && cp -r "$SRC/e2e" "$DEST"/ || true
-  # Skills (Claude Code Skills) ship with the dsv4shim profile and live next to it. Each
+  # Skills (Claude Code Skills) ship with the mmclaude profile and live next to it. Each
   # skill is a folder with SKILL.md; Claude Code auto-discovers them under
   # $CLAUDE_CONFIG_DIR/skills. Copy the whole tree so user-level skills install
   # alongside the binary.
@@ -107,8 +107,8 @@ fi
 chmod +x "$DEST"/bin/* 2>/dev/null || true
 
 # --------------------------------------------- optional: bundle Claude Code
-# Copies the claude binary into the dsv4shim install so the resolver can prefer it.
-# This makes the dsv4shim install self-contained — PATH becomes optional.
+# Copies the claude binary into the mmclaude install so the resolver can prefer it.
+# This makes the mmclaude install self-contained — PATH becomes optional.
 if [[ "$BUNDLE" -eq 1 ]]; then
   bundled="$DEST/bin/claude"
   if cp "$claude_bin" "$bundled" 2>/dev/null; then
@@ -120,15 +120,13 @@ if [[ "$BUNDLE" -eq 1 ]]; then
 fi
 
 # ------------------------------------------------------------- PATH shims
-# `dsv4f` and `claude-dsv4f` were two names for one script; under the DSv4Shim rename they
-# collapse to a single `dsv4shim`, so there is one symlink where there were two. The old names
-# are deliberately removed rather than aliased — this rename is a clean break.
-for n in dsv4shim dsv4shim-usage dsv4shim-import dsv4f claude-dsv4f dsv4f-usage dsv4f-import; do rm -f "$BIN/$n"; done
-ln -s "$DEST/bin/dsv4shim.mjs"      "$BIN/dsv4shim"
-ln -s "$DEST/bin/dsv4shim-usage"    "$BIN/dsv4shim-usage"
-ln -s "$DEST/bin/dsv4shim-import"   "$BIN/dsv4shim-import"
+# Remove legacy aliases as well as the current links so updates cannot leave a stale launcher.
+for n in mmclaude mmclaude-usage mmclaude-import dsv4f claude-dsv4f dsv4f-usage dsv4f-import; do rm -f "$BIN/$n"; done
+ln -s "$DEST/bin/mmclaude.mjs"      "$BIN/mmclaude"
+ln -s "$DEST/bin/mmclaude-usage"    "$BIN/mmclaude-usage"
+ln -s "$DEST/bin/mmclaude-import"   "$BIN/mmclaude-import"
 
 echo ""
 echo "Installed to $DEST"
 case ":$PATH:" in *":$BIN:"*) ;; *) echo "NOTE: add $BIN to your PATH (or open a new terminal)";; esac
-echo "Next:  dsv4shim setup"
+echo "Next:  mmclaude setup"

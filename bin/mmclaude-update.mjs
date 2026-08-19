@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * dsv4shim-update.mjs — pull the latest shim from GitHub over the installed copy.
+ * mmclaude-update.mjs — pull the latest shim from GitHub over the installed copy.
  *
- *   node bin/dsv4shim-update.mjs           apply if there is anything new
- *   node bin/dsv4shim-update.mjs --check   report only (exit 10 = update available)
- *   node bin/dsv4shim-update.mjs --force   reapply even when already current
- *   node bin/dsv4shim-update.mjs --no-restart
+ *   node bin/mmclaude-update.mjs           apply if there is anything new
+ *   node bin/mmclaude-update.mjs --check   report only (exit 10 = update available)
+ *   node bin/mmclaude-update.mjs --force   reapply even when already current
+ *   node bin/mmclaude-update.mjs --no-restart
  *
  * The install directory deliberately is NOT a git working tree: it mixes shipped
  * code with runtime state (usage.jsonl, balance history, vision-cache, shim.pid),
@@ -15,7 +15,7 @@
  *
  * That inverts the usual risk. Rather than listing what to protect and hoping the
  * list is complete, nothing is copied unless the repo tracks it — so a state file
- * cannot be clobbered by an update that forgot about it. ~/.config/dsv4shim,
+ * cannot be clobbered by an update that forgot about it. ~/.config/mmclaude,
  * which holds your API keys, caps and probe results, is never written at all
  * except to add newly-introduced config keys.
  */
@@ -24,15 +24,15 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, chm
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 
-// The repository was renamed claude-dsv4f -> dsv4shim on 2026-08-18, so this now matches it.
+// MMClaudeCode is the MiniMax derivative repository maintained by this install.
 // Installs that predate the rename keep working regardless: GitHub permanently redirects the
 // old path, and each machine's existing `.update-cache` clone still has the old URL in its own
 // remote until it is re-cloned. Verify against the live repo before editing this — a URL that
 // 404s here breaks self-update on every machine at once, silently, until someone deploys.
-const REPO_URL = 'https://github.com/OuiaOa/dsv4shim.git';
-const DATA = process.env.DSV4SHIM_DATA_DIR || join(homedir(), '.local', 'share', 'dsv4shim');
-const CONFIG = process.env.DSV4SHIM_CONFIG_DIR || join(homedir(), '.config', 'dsv4shim');
-import { threeWayMerge } from './dsv4shim-lib.mjs';
+const REPO_URL = 'https://github.com/OuiaOa/MMClaudeCode.git';
+const DATA = process.env.MMCLAUDE_DATA_DIR || join(homedir(), '.local', 'share', 'mmclaude');
+const CONFIG = process.env.MMCLAUDE_CONFIG_DIR || join(homedir(), '.config', 'mmclaude');
+import { threeWayMerge } from './mmclaude-lib.mjs';
 
 const CACHE = join(DATA, '.update-cache');
 const args = process.argv.slice(2);
@@ -226,9 +226,9 @@ function restartShim() {
   if (!probe.ok) { log('shim not running — it starts on the new code next time'); return; }
 
   if (process.platform !== 'win32') {
-    const unit = run('systemctl', ['--user', 'list-unit-files', 'dsv4shim-shim.service'], DATA);
-    if (unit.ok && unit.out.includes('dsv4shim-shim.service')) {
-      const r = run('systemctl', ['--user', 'restart', 'dsv4shim-shim.service'], DATA);
+    const unit = run('systemctl', ['--user', 'list-unit-files', 'mmclaude-shim.service'], DATA);
+    if (unit.ok && unit.out.includes('mmclaude-shim.service')) {
+      const r = run('systemctl', ['--user', 'restart', 'mmclaude-shim.service'], DATA);
       log(r.ok ? 'shim restarted via systemd — running the new code' : `systemctl restart failed: ${r.out}`);
       return;
     }
@@ -237,26 +237,26 @@ function restartShim() {
   if (process.platform === 'win32') {
     // CONFIRMED LIVE BUG, fixed 2026-08-13: this used to just kill the shim and stop, same
     // as the generic non-systemd fallback below -- but on Windows that leaves it down
-    // indefinitely rather than "restarting on next use". A detached `dsv4shim start` spawned
+    // indefinitely rather than "restarting on next use". A detached `mmclaude start` spawned
     // over an SSH exec session gets killed the moment that SSH session ends (confirmed
     // live on PC-4D: Windows OpenSSH tears down the whole job object, even a Node child
     // spawned with detached:true) -- and even run locally, nothing guarantees the NEXT
-    // "use" is `dsv4shim run`/`dsv4shim start` specifically rather than an already-running
+    // "use" is `mmclaude run`/`mmclaude start` specifically rather than an already-running
     // `claude` session just making requests into a now-dead shim. The scheduled-task
-    // launcher (`dsv4shim-shim`, set up specifically because of Windows autostart
+    // launcher (`mmclaude-shim`, set up specifically because of Windows autostart
     // unreliability -- see machine-inventory memory) is immune to both problems, since a
     // scheduled task runs outside any interactive session's job object. Use it the same
     // way the systemd branch above does: stop, then immediately bring it back up in one step.
     const killResult = run('powershell.exe', ['-NoProfile', '-Command',
       `Get-NetTCPConnection -LocalPort ${port} -State Listen -EA SilentlyContinue | Select-Object -Expand OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -EA SilentlyContinue }`], DATA);
     if (!killResult.ok) { log('could not stop the shim; restart it yourself'); return; }
-    const task = run('schtasks', ['/query', '/tn', 'dsv4shim-shim'], DATA);
+    const task = run('schtasks', ['/query', '/tn', 'mmclaude-shim'], DATA);
     if (task.ok) {
-      const restart = run('schtasks', ['/run', '/tn', 'dsv4shim-shim'], DATA);
+      const restart = run('schtasks', ['/run', '/tn', 'mmclaude-shim'], DATA);
       log(restart.ok ? 'shim restarted via scheduled task — running the new code'
         : 'shim stopped, but the scheduled task failed to restart it — restart it yourself');
     } else {
-      log('shim stopped — no scheduled-task launcher found; it restarts on the new code next time `dsv4shim start`/`dsv4shim run` is used');
+      log('shim stopped — no scheduled-task launcher found; it restarts on the new code next time `mmclaude start`/`mmclaude run` is used');
     }
     return;
   }

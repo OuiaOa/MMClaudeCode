@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Tests for bin/dsv4shim-reroute.mjs — pointing a KEPT Claude Code CLI install at the dsv4shim
+ * Tests for bin/mmclaude-reroute.mjs — pointing a KEPT Claude Code CLI install at the mmclaude
  * shim by merging the standard env block into its own settings.json. The proven mechanism
  * (built and verified end-to-end on PC-4D, 2026-08-12) — these tests cover the merge safety
  * properties: never clobbers existing settings, never overwrites an existing env override,
@@ -9,9 +9,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { buildRerouteEnv, buildRerouteExtras, applyCliReroute, revertCliReroute, installPortableAssets } from './bin/dsv4shim-reroute.mjs';
+import { buildRerouteEnv, buildRerouteExtras, applyCliReroute, revertCliReroute, installPortableAssets } from './bin/mmclaude-reroute.mjs';
 
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-reroute-test-'));
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'mmclaude-reroute-test-'));
 process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
 
 let pass = 0, fail = 0;
@@ -20,17 +20,17 @@ function check(name, cond, detail = '') {
   else { console.log(`  \x1b[31m✗\x1b[0m ${name}${detail ? `  -> ${detail}` : ''}`); fail++; }
 }
 
-console.log('\n\x1b[1mdsv4shim-reroute tests\x1b[0m\n');
+console.log('\n\x1b[1mmmclaude-reroute tests\x1b[0m\n');
 
 console.log('\x1b[1mbuildRerouteEnv\x1b[0m');
 {
   const env = buildRerouteEnv({ port: 8788, sentinel: 'test-sentinel-abc' });
   check('base URL points at the given port', env.ANTHROPIC_BASE_URL === 'http://127.0.0.1:8788');
   check('auth token is the given sentinel', env.ANTHROPIC_AUTH_TOKEN === 'test-sentinel-abc');
-  check('default routes to the pro/medium profile', env.ANTHROPIC_MODEL === 'deepseek-v4-pro-medium');
+  check('default routes to the M3 non-thinking profile', env.ANTHROPIC_MODEL === 'mmclaude-m3-default');
   // Fable has its own env var; leaving it unset is what made it fall through to the native
   // entry and ignore the Pro/max intent entirely.
-  check('fable gets its own profile', env.ANTHROPIC_DEFAULT_FABLE_MODEL === 'deepseek-v4-pro-max');
+  check('fable gets the M3 thinking profile', env.ANTHROPIC_DEFAULT_FABLE_MODEL === 'mmclaude-m3-thinking');
   check('no duplicate custom-model entry is created',
     env.ANTHROPIC_CUSTOM_MODEL_OPTION === undefined && env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === undefined);
   // Each tier must arrive under its OWN name. One shared sentinel would make opus, sonnet and
@@ -38,14 +38,14 @@ console.log('\x1b[1mbuildRerouteEnv\x1b[0m');
   check('opus and sonnet use distinct tier sentinels',
     env.ANTHROPIC_DEFAULT_OPUS_MODEL !== env.ANTHROPIC_DEFAULT_SONNET_MODEL,
     `${env.ANTHROPIC_DEFAULT_OPUS_MODEL} vs ${env.ANTHROPIC_DEFAULT_SONNET_MODEL}`);
-  check('haiku is a deliberate pick: flash at high',
-    env.ANTHROPIC_DEFAULT_HAIKU_MODEL === 'deepseek-v4-flash-high');
-  check('claude-code\'s own background routing gets the cheapest profile',
-    env.ANTHROPIC_SMALL_FAST_MODEL === 'deepseek-v4-flash-low');
+  check('haiku is a deliberate pick: M2.7 highspeed thinking',
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL === 'mmclaude-m2.7-highspeed-thinking');
+  check('claude-code\'s own background routing gets M2.5 with fallback',
+    env.ANTHROPIC_SMALL_FAST_MODEL === 'mmclaude-m2.5-background');
   check('1M context window is advertised to the CLI',
     env.CLAUDE_CODE_MAX_CONTEXT_TOKENS === '1000000');
-  check('fast/background model routes to the cheapest profile', env.ANTHROPIC_SMALL_FAST_MODEL === 'deepseek-v4-flash-low');
-  check('classifier-hang mitigations are present (from the dsv4shim shim fixes)',
+  check('fast/background model routes to the M2.5 profile', env.ANTHROPIC_SMALL_FAST_MODEL === 'mmclaude-m2.5-background');
+  check('classifier-hang mitigations are present (from the mmclaude shim fixes)',
     env.CLAUDE_CODE_DISABLE_FAST_MODE === '1' && env.CLAUDE_CODE_TWO_STAGE_CLASSIFIER === '0');
 }
 
@@ -82,7 +82,7 @@ console.log('\n\x1b[1mapplyCliReroute: existing settings.json is preserved, not 
   const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   check('pre-existing enabledPlugins untouched', written.enabledPlugins['code-review@x'] === true);
   check('pre-existing permissions untouched', written.permissions.defaultMode === 'default');
-  check('env block was added alongside existing keys', written.env.ANTHROPIC_MODEL === 'deepseek-v4-pro-medium');
+  check('env block was added alongside existing keys', written.env.ANTHROPIC_MODEL === 'mmclaude-m3-default');
   const backedUp = JSON.parse(fs.readFileSync(r.backupPath, 'utf8'));
   check('backup is byte-faithful to the ORIGINAL (no env block in it)', backedUp.env === undefined);
 }
@@ -151,8 +151,8 @@ console.log('\n\x1b[1mbuildRerouteExtras\x1b[0m');
   fs.writeFileSync(path.join(rootDir, 'deny-list.sh'), '#!/bin/bash\necho ok\n');
 
   const linuxExtras = buildRerouteExtras({ rootDir, platform: 'linux' });
-  check('statusLine points at dsv4shim-statusline.mjs under rootDir/bin',
-    linuxExtras.statusLine.command.includes(path.join(rootDir, 'bin', 'dsv4shim-statusline.mjs')));
+  check('statusLine points at mmclaude-statusline.mjs under rootDir/bin',
+    linuxExtras.statusLine.command.includes(path.join(rootDir, 'bin', 'mmclaude-statusline.mjs')));
   check('effortLevel defaults to high', linuxExtras.effortLevel === 'high');
   check('skipWebFetchPreflight is set', linuxExtras.skipWebFetchPreflight === true);
   check('denyListSrc included on Linux when deny-list.sh exists', linuxExtras.denyListSrc === path.join(rootDir, 'deny-list.sh'));
@@ -267,9 +267,9 @@ console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicat
   const sp = path.join(d, 'settings.json');
   fs.writeFileSync(sp, JSON.stringify({
     env: {
-      ANTHROPIC_MODEL: 'deepseek-v4-flash',              // stale sentinel -> must refresh
-      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-opus',   // stale from a PREVIOUS scheme
-      ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'DeepSeek V4 Flash 0731',
+      ANTHROPIC_MODEL: 'mmclaude-m2.7-highspeed-thinking', // stale sentinel -> must refresh
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m3-thinking', // stale from a PREVIOUS scheme
+      ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'MiniMax M3',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999',       // machine-specific -> never touched
       ANTHROPIC_AUTH_TOKEN: 'user-token',
     },
@@ -280,7 +280,7 @@ console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicat
   const after = JSON.parse(fs.readFileSync(sp, 'utf8')).env;
 
   check('a stale tier sentinel is refreshed, not left behind',
-    after.ANTHROPIC_DEFAULT_SONNET_MODEL === 'deepseek-v4-flash-max', after.ANTHROPIC_DEFAULT_SONNET_MODEL);
+    after.ANTHROPIC_DEFAULT_SONNET_MODEL === 'mmclaude-m2.7-thinking', after.ANTHROPIC_DEFAULT_SONNET_MODEL);
   check('opus and sonnet end up distinguishable',
     after.ANTHROPIC_DEFAULT_OPUS_MODEL !== after.ANTHROPIC_DEFAULT_SONNET_MODEL,
     `${after.ANTHROPIC_DEFAULT_OPUS_MODEL} vs ${after.ANTHROPIC_DEFAULT_SONNET_MODEL}`);
@@ -288,7 +288,7 @@ console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicat
   // tier. A stale one left behind by an older reroute is not this function's to delete, but it
   // must not be re-added either.
   check('no custom-model entry is written back',
-    !('ANTHROPIC_CUSTOM_MODEL_OPTION' in after) || after.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === 'DeepSeek V4 Flash 0731',
+    !('ANTHROPIC_CUSTOM_MODEL_OPTION' in after) || after.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === 'MiniMax M3',
     JSON.stringify(after.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME));
   check('an existing base URL is never rewritten',
     after.ANTHROPIC_BASE_URL === 'http://127.0.0.1:9999', after.ANTHROPIC_BASE_URL);

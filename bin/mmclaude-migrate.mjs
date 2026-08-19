@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsv4shim-migrate — one-shot rename migration, claude-dsv4f -> dsv4shim.
+ * mmclaude-migrate — one-shot rename migration, claude-dsv4f -> mmclaude.
  *
  * The rename is a CLEAN BREAK: no code path reads the old locations any more. That makes this
  * script the whole migration. A machine that gets the new code without running this loses
@@ -19,16 +19,16 @@
  * a brief broken window, which is inherent to a clean break; this is the order where the
  * window closes by itself at step 2 rather than needing a manual fix.
  *
- * Step 1 leaves the old `dsv4f-*` files behind next to the new `dsv4shim-*` ones. That is
+ * Step 1 leaves the old `dsv4f-*` files behind next to the new `mmclaude-*` ones. That is
  * harmless clutter — the updater copies tracked files in and does not prune removed ones.
  *
  * What moves:
- *   ~/.config/claude-dsv4f        -> ~/.config/dsv4shim         (key, sentinel, config, cap)
- *   ~/.local/share/claude-dsv4f   -> ~/.local/share/dsv4shim    (install, usage ledger, caches)
- *   ~/.claude-dsv4f               -> ~/.dsv4shim                (isolated Claude Code profile)
- *   systemd --user claude-dsv4f-shim.service -> dsv4shim-shim.service
- *   Windows scheduled task claude-dsv4f-shim -> dsv4shim
- *   CLAUDE_DSV4F_* env keys in any settings.json this install wrote -> DSV4SHIM_*
+ *   ~/.config/claude-dsv4f        -> ~/.config/mmclaude         (key, sentinel, config, cap)
+ *   ~/.local/share/claude-dsv4f   -> ~/.local/share/mmclaude    (install, usage ledger, caches)
+ *   ~/.claude-dsv4f               -> ~/.mmclaude                (isolated Claude Code profile)
+ *   systemd --user claude-dsv4f-shim.service -> mmclaude-shim.service
+ *   Windows scheduled task claude-dsv4f-shim -> mmclaude
+ *   CLAUDE_DSV4F_* env keys in any settings.json this install wrote -> MMCLAUDE_*
  *
  * Safe to re-run: every step is skipped when its source is absent or its destination already
  * exists. Nothing is deleted — directories are MOVED, and a move that would clobber an
@@ -79,22 +79,22 @@ function moveDir(from, to, what) {
   }
 }
 
-console.log('dsv4shim migration (claude-dsv4f -> dsv4shim)\n');
+console.log('mmclaude migration (claude-dsv4f -> mmclaude)\n');
 
 moveDir(path.join(HOME, '.config', 'claude-dsv4f'),
-        path.join(HOME, '.config', 'dsv4shim'), 'config dir');
+        path.join(HOME, '.config', 'mmclaude'), 'config dir');
 moveDir(path.join(HOME, '.local', 'share', 'claude-dsv4f'),
-        path.join(HOME, '.local', 'share', 'dsv4shim'), 'data dir');
+        path.join(HOME, '.local', 'share', 'mmclaude'), 'data dir');
 moveDir(path.join(HOME, '.claude-dsv4f'),
-        path.join(HOME, '.dsv4shim'), 'isolated profile');
+        path.join(HOME, '.mmclaude'), 'isolated profile');
 
 // ---------------------------------------------------------------- service unit
 if (!WIN) {
   const unitDir = path.join(HOME, '.config', 'systemd', 'user');
   const oldUnit = path.join(unitDir, 'claude-dsv4f-shim.service');
-  const newUnit = path.join(unitDir, 'dsv4shim-shim.service');
+  const newUnit = path.join(unitDir, 'mmclaude-shim.service');
   if (fs.existsSync(oldUnit) && !fs.existsSync(newUnit)) {
-    say(`move  systemd unit: claude-dsv4f-shim.service -> dsv4shim-shim.service`);
+    say(`move  systemd unit: claude-dsv4f-shim.service -> mmclaude-shim.service`);
     moved++;
     if (!DRY) {
       try {
@@ -103,13 +103,13 @@ if (!WIN) {
       } catch { /* not enabled, or not running — either is fine */ }
       // Rewrite ExecStart and friends: the unit points at paths that just moved.
       const body = fs.readFileSync(oldUnit, 'utf8')
-        .replaceAll('claude-dsv4f', 'dsv4shim')
-        .replaceAll('CLAUDE_DSV4F', 'DSV4SHIM');
+        .replaceAll('claude-dsv4f', 'mmclaude')
+        .replaceAll('CLAUDE_DSV4F', 'MMCLAUDE');
       fs.writeFileSync(newUnit, body);
       fs.rmSync(oldUnit);
       try {
         execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
-        execFileSync('systemctl', ['--user', 'enable', '--now', 'dsv4shim-shim.service'],
+        execFileSync('systemctl', ['--user', 'enable', '--now', 'mmclaude-shim.service'],
                      { stdio: 'ignore' });
         say('      unit reloaded and started');
       } catch (e) {
@@ -127,34 +127,34 @@ if (!WIN) {
   say('note  Windows scheduled task must be re-created by hand (schtasks cannot rename):');
   say('        schtasks /delete /tn claude-dsv4f-shim /f');
   say('        then re-run setup, or re-create the task pointing at the new');
-  say('        %USERPROFILE%\\.local\\share\\dsv4shim\\ops path.');
+  say('        %USERPROFILE%\\.local\\share\\mmclaude\\ops path.');
 }
 
 // ------------------------------------------------------- settings.json env keys
-// A rerouted install carries DSV4SHIM_*/CLAUDE_DSV4F_* keys in someone else's settings.json.
+// A rerouted install carries MMCLAUDE_*/CLAUDE_DSV4F_* keys in someone else's settings.json.
 // Renaming the vars in code without renaming them there leaves the reroute pointing nowhere.
 for (const settings of [
   path.join(HOME, '.claude', 'settings.json'),
-  path.join(HOME, '.dsv4shim', 'settings.json'),
+  path.join(HOME, '.mmclaude', 'settings.json'),
 ]) {
   if (!fs.existsSync(settings)) continue;
   let text;
   try { text = fs.readFileSync(settings, 'utf8'); } catch { continue; }
   if (!text.includes('CLAUDE_DSV4F') && !text.includes('claude-dsv4f')) continue;
-  say(`edit  ${settings}: CLAUDE_DSV4F_* -> DSV4SHIM_*, claude-dsv4f paths -> dsv4shim`);
+  say(`edit  ${settings}: CLAUDE_DSV4F_* -> MMCLAUDE_*, claude-dsv4f paths -> mmclaude`);
   if (DRY) { moved++; continue; }
   try {
     JSON.parse(text);                       // refuse to touch a file that is already broken
-    fs.copyFileSync(settings, settings + '.pre-dsv4shim.bak');
+    fs.copyFileSync(settings, settings + '.pre-mmclaude.bak');
     // Order matters. The first two fix DIRECTORY names; the third fixes BINARY names, which
     // the directory rules miss entirely — `.../claude-dsv4f/bin/dsv4f-statusline.mjs` becomes
-    // `.../dsv4shim/bin/dsv4f-statusline.mjs`, a path that no longer exists, and the statusline
+    // `.../mmclaude/bin/dsv4f-statusline.mjs`, a path that no longer exists, and the statusline
     // silently stops rendering. `dsv4f-` cannot re-match a string already rewritten to
-    // `dsv4shim-`, so this is safe to run twice.
+    // `mmclaude-`, so this is safe to run twice.
     const out = text
-      .replaceAll('CLAUDE_DSV4F', 'DSV4SHIM')
-      .replaceAll('claude-dsv4f', 'dsv4shim')
-      .replaceAll('dsv4f-', 'dsv4shim-');
+      .replaceAll('CLAUDE_DSV4F', 'MMCLAUDE')
+      .replaceAll('claude-dsv4f', 'mmclaude')
+      .replaceAll('dsv4f-', 'mmclaude-');
     JSON.parse(out);                        // and refuse to write one we just broke
     fs.writeFileSync(settings, out);
     moved++;
@@ -166,6 +166,6 @@ for (const settings of [
 
 console.log(`\n${moved} migrated, ${skipped} skipped, ${failed} failed`);
 if (!WIN && !DRY && !failed) {
-  console.log('\nNext: confirm the shim is up —  systemctl --user status dsv4shim-shim');
+  console.log('\nNext: confirm the shim is up —  systemctl --user status mmclaude-shim');
 }
 if (failed) process.exit(1);

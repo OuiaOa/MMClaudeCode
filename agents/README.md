@@ -1,12 +1,12 @@
 # Agents
 
-Claude Code subagent definitions that ship with the dsv4shim profile. Each `.md` file is one
+Claude Code subagent definitions that ship with the mmclaude profile. Each `.md` file is one
 agent: YAML frontmatter (`name`, `description`, `tools`) followed by the instructions the
 agent runs under. Claude Code discovers them under `<config-dir>/agents/`.
 
 ## Where these came from
 
-Adapted from [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness),
+Adapted from [minimax-ai/minimax-harness](https://github.com/minimax-ai/minimax-harness),
 whose `.agents/skills/` tree and `docs/defensive-patterns.md` encode bug classes and review
 discipline learned building that harness.
 

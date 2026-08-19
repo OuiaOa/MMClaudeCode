@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
- * dsv4shim-scrub — remove imported history FROM a source, after it has already been copied into
- * dsv4shim. This is the "move" half of the copy/move/migrate disposition model (see
- * dsv4shim-multi-source-import in memory for the full design) — it never runs as part of a
+ * mmclaude-scrub — remove imported history FROM a source, after it has already been copied into
+ * mmclaude. This is the "move" half of the copy/move/migrate disposition model (see
+ * mmclaude-multi-source-import in memory for the full design) — it never runs as part of a
  * plain "copy," and it never runs without the caller having already confirmed the import
  * succeeded.
  *
  * SCOPE DECISION, deliberately conservative: this module only ever removes DATA (transcripts,
- * memories, UI sidecars) that dsv4shim itself imported. It never uninstalls another application.
+ * memories, UI sidecars) that mmclaude itself imported. It never uninstalls another application.
  * Automating a real uninstaller for Claude Desktop or opencode — a signed installer/MSI on
  * Windows, an .app bundle or package-manager entry elsewhere — carries real risk of doing
  * something unexpected on a machine with no one watching, and there is no reliable way to
  * verify a third-party uninstaller's behavior in advance. "Migrate & remove" for those two
  * sources therefore means: scrub the data (this module), then report clear manual uninstall
  * steps for the user to run themselves. Claude Code CLI is the one exception — see
- * describeCliRemoval() below — because "removing" it there means something dsv4shim fully
+ * describeCliRemoval() below — because "removing" it there means something mmclaude fully
  * controls (bundling its own copy, stripping the standalone one from PATH), not running
  * someone else's uninstaller.
  *
@@ -26,7 +26,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { walkFiles } from './dsv4shim-lib.mjs';
+import { walkFiles } from './mmclaude-lib.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -44,13 +44,13 @@ function fileNonEmpty(p) {
 
 /**
  * Scrub Claude Code CLI / Claude Desktop transcripts from the SHARED ~/.claude/projects
- * tree. Because the two sources share this exact directory (see dsv4shim-sources.mjs), this
+ * tree. Because the two sources share this exact directory (see mmclaude-sources.mjs), this
  * function is deliberately the ONLY place either one's transcript-scrub is implemented —
  * scrubbing "for claude-cli" and "for claude-desktop" would otherwise race and double-count.
  * Call it once, whichever source (or both) asked to move/migrate.
  *
  * @param {string} transcriptRoot   ~/.claude/projects
- * @param {string} destRoot          the dsv4shim profile's projects dir the import already wrote to
+ * @param {string} destRoot          the mmclaude profile's projects dir the import already wrote to
  * @param {string} backupDir
  * @returns {{removed: number, skipped: number, backedUpTo: string}}
  */
@@ -118,7 +118,7 @@ export function scrubDesktopSidecars(sidecarsRoot, backupDir) {
  * database half-modified.
  *
  * @param {string} dbPath
- * @param {string[]} sessionIds   the opencode session ids (not dsv4shim's converted UUIDs) that
+ * @param {string[]} sessionIds   the opencode session ids (not mmclaude's converted UUIDs) that
  *                                 were successfully imported and should now be removed
  * @param {string} backupDir
  */
@@ -164,9 +164,9 @@ export function scrubOpencodeSessions(dbPath, sessionIds, backupDir) {
 }
 
 /**
- * "Removing" Claude Code CLI never means deleting the binary dsv4shim itself depends on — see
- * this file's header. It means: the binary becomes PRIVATE to dsv4shim (bundled into its own
- * install dir; resolveClaude() in dsv4shim-lib.mjs already prefers that bundled copy on every
+ * "Removing" Claude Code CLI never means deleting the binary mmclaude itself depends on — see
+ * this file's header. It means: the binary becomes PRIVATE to mmclaude (bundled into its own
+ * install dir; resolveClaude() in mmclaude-lib.mjs already prefers that bundled copy on every
  * platform — see its own header for a bug that used to make this true on Windows only) and
  * the user's Anthropic credentials are deleted so nothing can authenticate against Anthropic
  * anymore. This function only DESCRIBES what would happen — a pure, side-effect-free planner
@@ -177,8 +177,8 @@ export function describeCliRemoval({ binaryPath, onPath, credentialsPath, creden
   const steps = [];
   if (binaryPath) {
     steps.push(onPath
-      ? `Copy the Claude Code binary into dsv4shim's own install directory, so dsv4shim never needs the one on PATH again.`
-      : `Claude Code binary is already off PATH — will be bundled into dsv4shim's install directory if not already.`);
+      ? `Copy the Claude Code binary into mmclaude's own install directory, so mmclaude never needs the one on PATH again.`
+      : `Claude Code binary is already off PATH — will be bundled into mmclaude's install directory if not already.`);
   } else {
     steps.push('No Claude Code binary found — one will be installed and bundled privately, never exposed on PATH.');
   }
@@ -195,13 +195,13 @@ export function describeCliRemoval({ binaryPath, onPath, credentialsPath, creden
  * already bundled), then delete the Anthropic credentials file (backed up first, same
  * verify-and-backup discipline as every other function in this module). Deliberately does
  * NOT touch PATH, npm's global package registry, or any OS-level app entry — those are the
- * user's own system state outside anything dsv4shim installed, and leaving a standalone
+ * user's own system state outside anything mmclaude installed, and leaving a standalone
  * `claude` command reachable doesn't cost anything by itself now that it has no credentials
  * to authenticate with; removing it would risk breaking something else that also depends on
  * that global npm package (an IDE extension, another tool) for no real gain.
  *
  * @param {string}      binaryPath        source binary to bundle from (may be null if none found)
- * @param {string}      dataDir           dsv4shim's DATA_DIR (bundled copy goes to <dataDir>/bin/)
+ * @param {string}      dataDir           mmclaude's DATA_DIR (bundled copy goes to <dataDir>/bin/)
  * @param {string}      credentialsPath   ~/.claude/.credentials.json
  * @param {boolean}     credentialsExist
  * @param {string}      [platform]
@@ -243,7 +243,7 @@ export function describeAppRemoval(sourceId, { platform = process.platform } = {
   const label = sourceId === 'claude-desktop' ? 'Claude Desktop' : 'opencode';
   if (platform === 'win32') {
     return [
-      `${label} was not uninstalled automatically — running a third-party uninstaller unattended is not something dsv4shim does.`,
+      `${label} was not uninstalled automatically — running a third-party uninstaller unattended is not something mmclaude does.`,
       `To remove it yourself: Settings -> Apps -> Installed apps -> search "${label}" -> Uninstall.`,
     ];
   }

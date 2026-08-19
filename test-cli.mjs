@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Tests for bin/dsv4shim-lib.mjs — the small helper layer exported for testability.
+ * Tests for bin/mmclaude-lib.mjs — the small helper layer exported for testability.
  *
  * Currently covers resolveClaude(): the Windows PATH-resolver that picks between
  * 'claude' (no extension, lets cmd.exe apply PATHEXT) and an absolute fallback path.
- * The current dsv4shim.mjs hardcodes the literal string 'claude.cmd' and never falls
+ * The current mmclaude.mjs hardcodes the literal string 'claude.cmd' and never falls
  * back, which is the bug these tests will fail against.
  */
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { resolveClaude } from './bin/dsv4shim-lib.mjs';
+import { resolveClaude } from './bin/mmclaude-lib.mjs';
 
 let pass = 0, fail = 0;
 function check(name, fn) {
@@ -26,7 +26,7 @@ const throwingExec = () => { throw new Error('spawn failed'); };
 const fsAllow = (paths) => ({ existsSync: (p) => paths.includes(p) });
 const envOf = (o) => o;
 
-console.log('\n\x1b[1mdsv4shim CLI tests\x1b[0m\n');
+console.log('\n\x1b[1mmmclaude CLI tests\x1b[0m\n');
 console.log('\x1b[1mresolveClaude()\x1b[0m');
 
 check('non-Windows: returns "claude" without touching fs or where', () => {
@@ -108,27 +108,27 @@ check('Windows + where.exe throws (sandboxed env): falls through to fallback pat
   assert.equal(r, candidate);
 });
 
-check('Windows + DSV4SHIM_DATA_DIR/bin/claude.exe bundled: returned first (PATH bypassed)', () => {
+check('Windows + MMCLAUDE_DATA_DIR/bin/claude.exe bundled: returned first (PATH bypassed)', () => {
   const home = path.join(path.parse(os.tmpdir()).root, 'fakehome');
-  const bundled = path.join(home, '.local', 'share', 'dsv4shim', 'bin', 'claude.exe');
+  const bundled = path.join(home, '.local', 'share', 'mmclaude', 'bin', 'claude.exe');
   const r = resolveClaude({
     platform: 'win32',
     // where.exe finds something on PATH — but bundled should still win
     exec: () => okWhere,
     fsSync: fsAllow([bundled]),
-    env: envOf({ DSV4SHIM_DATA_DIR: path.join(home, '.local', 'share', 'dsv4shim') }),
+    env: envOf({ MMCLAUDE_DATA_DIR: path.join(home, '.local', 'share', 'mmclaude') }),
     home,
   });
   assert.equal(r, bundled);
 });
 
-check('Windows + DSV4SHIM_DATA_DIR set but no bundled copy: falls through to PATH/lookup', () => {
+check('Windows + MMCLAUDE_DATA_DIR set but no bundled copy: falls through to PATH/lookup', () => {
   const home = path.join(path.parse(os.tmpdir()).root, 'fakehome');
   const r = resolveClaude({
     platform: 'win32',
     exec: () => okWhere,
     fsSync: fsAllow([]),
-    env: envOf({ DSV4SHIM_DATA_DIR: path.join(home, '.local', 'share', 'dsv4shim') }),
+    env: envOf({ MMCLAUDE_DATA_DIR: path.join(home, '.local', 'share', 'mmclaude') }),
     home,
   });
   assert.equal(r, 'claude');
@@ -141,16 +141,16 @@ check('Windows + DSV4SHIM_DATA_DIR set but no bundled copy: falls through to PAT
 //      copied a binary to a path resolveClaude() would NEVER look at, making --bundle
 //      silently inert everywhere except Windows.
 //   2. Even fixed for #1, the check only fired when the caller had explicitly set
-//      DSV4SHIM_DATA_DIR in env -- which dsv4shim.mjs's own cmdRun() never does (it computes
+//      MMCLAUDE_DATA_DIR in env -- which mmclaude.mjs's own cmdRun() never does (it computes
 //      DATA_DIR locally with a fallback default but doesn't export it back into
 //      process.env before calling resolveClaude()). So in EVERY real, non-test call site,
 //      the bundled check would never have fired even on Windows, despite test #7 above
-//      (which hand-supplies DSV4SHIM_DATA_DIR) appearing to prove it worked.
+//      (which hand-supplies MMCLAUDE_DATA_DIR) appearing to prove it worked.
 console.log('\n\x1b[1mresolveClaude() -- 2026-08-13 bundled-copy bug fixes\x1b[0m');
 
 check('non-Windows: a bundled copy IS now checked and preferred over bare "claude"', () => {
   const home = '/home/fakeuser';
-  const bundled = path.join(home, '.local', 'share', 'dsv4shim', 'bin', 'claude');
+  const bundled = path.join(home, '.local', 'share', 'mmclaude', 'bin', 'claude');
   const r = resolveClaude({
     platform: 'linux',
     exec: throwingExec, // must never even get this far -- bundled wins first
@@ -174,7 +174,7 @@ check('non-Windows: no bundled copy present still falls back to bare "claude" (u
 
 check('macOS: bundled copy is also checked (not just win32/linux)', () => {
   const home = '/Users/fakeuser';
-  const bundled = path.join(home, '.local', 'share', 'dsv4shim', 'bin', 'claude');
+  const bundled = path.join(home, '.local', 'share', 'mmclaude', 'bin', 'claude');
   const r = resolveClaude({
     platform: 'darwin',
     exec: throwingExec,
@@ -185,26 +185,26 @@ check('macOS: bundled copy is also checked (not just win32/linux)', () => {
   assert.equal(r, bundled);
 });
 
-check('Windows: bundled copy found WITHOUT explicitly setting DSV4SHIM_DATA_DIR (the real-world case)', () => {
-  // This is the scenario that matters: dsv4shim.mjs's cmdRun() never sets DSV4SHIM_DATA_DIR in
+check('Windows: bundled copy found WITHOUT explicitly setting MMCLAUDE_DATA_DIR (the real-world case)', () => {
+  // This is the scenario that matters: mmclaude.mjs's cmdRun() never sets MMCLAUDE_DATA_DIR in
   // the environment resolveClaude() sees -- it only has a LOCAL variable with the same
-  // fallback logic. Passing env: {} here (no DSV4SHIM_DATA_DIR key at all) is the honest
+  // fallback logic. Passing env: {} here (no MMCLAUDE_DATA_DIR key at all) is the honest
   // simulation of that; the fix means resolveClaude() must derive the same default path
   // itself rather than requiring the caller to have already done so.
   const home = path.join(path.parse(os.tmpdir()).root, 'realisticfakehome');
-  const bundled = path.join(home, '.local', 'share', 'dsv4shim', 'bin', 'claude.exe');
+  const bundled = path.join(home, '.local', 'share', 'mmclaude', 'bin', 'claude.exe');
   const r = resolveClaude({
     platform: 'win32',
     exec: () => okWhere, // PATH also has a claude -- bundled must still win
     fsSync: fsAllow([bundled]),
-    env: envOf({}), // deliberately no DSV4SHIM_DATA_DIR
+    env: envOf({}), // deliberately no MMCLAUDE_DATA_DIR
     home,
   });
   assert.equal(r, bundled);
 });
 
 check('an explicit dataDir override takes precedence over the computed default', () => {
-  const explicitDir = '/opt/custom-dsv4shim-location';
+  const explicitDir = '/opt/custom-mmclaude-location';
   const bundled = path.join(explicitDir, 'bin', 'claude');
   const r = resolveClaude({
     platform: 'linux',
@@ -224,9 +224,9 @@ check('an explicit dataDir override takes precedence over the computed default',
 // way in one night — stale prices, one shared model sentinel per tier, and a denyModelPatterns
 // entry that refused every new pro profile — each silent, each found by accident.
 {
-  const { threeWayMerge } = await import('./bin/dsv4shim-lib.mjs');
+  const { threeWayMerge } = await import('./bin/mmclaude-lib.mjs');
   const eq = (a, b, msg) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${msg}: ${JSON.stringify(a)}`); };
-  const prev = { denyModelPatterns: ['deepseek-v4-pro', 'x'], model: 'old', cap: { dailyUsd: 5 }, gone: { a: 1 } };
+  const prev = { denyModelPatterns: ['minimax-v4-pro', 'x'], model: 'old', cap: { dailyUsd: 5 }, gone: { a: 1 } };
   const base = { denyModelPatterns: ['x'], model: 'new', cap: { dailyUsd: 5 } };
 
   const untouched = structuredClone(prev);

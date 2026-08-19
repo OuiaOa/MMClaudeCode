@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Store the MiniMax Token Plan/API key without echoing it or placing it in argv.
+set -euo pipefail
+HOME_DIR="${HOME:?}"
+CONFIG_DIR="${MMCLAUDE_CONFIG_DIR:-$HOME_DIR/.config/mmclaude}"
+KEY_FILE="$CONFIG_DIR/key"
+if [[ "${1:-}" == "--list" ]]; then
+  [[ -s "$KEY_FILE" ]] && echo "minimax: key stored" || echo "minimax: not set"
+  exit 0
+fi
+[[ "${1:-minimax}" == "minimax" ]] || { echo "Usage: mmclaude-key minimax | --list" >&2; exit 2; }
+mkdir -p "$CONFIG_DIR"; chmod 700 "$CONFIG_DIR"
+printf 'MiniMax API key: ' > /dev/tty
+IFS= read -rs key < /dev/tty
+printf '\n'
+key="${key//[$'\r\n\t ']/}"
+[[ -n "$key" ]] || { echo 'Empty input, nothing written.' >&2; exit 1; }
+printf '%s' "$key" > "$KEY_FILE"; chmod 600 "$KEY_FILE"
+echo "Stored in $KEY_FILE"
+tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+code="$(curl -sS -o "$tmp" -w '%{http_code}' --max-time 20 -H "Authorization: Bearer $key" -H 'Accept: application/json' 'https://www.minimax.io/v1/token_plan/remains' || true)"
+[[ "$code" == 2* ]] && echo "Verified (HTTP $code)" || echo "Verification failed (HTTP $code); the key was still stored."

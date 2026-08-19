@@ -1,193 +1,54 @@
 {
-  "_comment": "dsv4shim shim configuration. Rates are USD per 1,000,000 tokens.",
+  "_comment": "MMClaude configuration for MiniMax M3. Token Plan usage is tracked locally by tokens and polled live; cost fields stay zero.",
+  "provider": "minimax",
   "port": 8788,
   "bind": "127.0.0.1",
-  "upstream": "https://api.deepseek.com/anthropic",
-  "balanceUrl": "https://api.deepseek.com/user/balance",
-  "modelsUrl": "https://api.deepseek.com/models",
-  "model": "deepseek-v4-pro-medium",
-  "fastModel": "deepseek-v4-flash-low",
-  "_fastModelNote": "modelMapper() rewrites claude-3-5-haiku* (compaction, subagent dispatch, window-topic detection) to this sentinel so resolveModel() slots it as background (effort:none) instead of falling through to `model` at main-slot effort:high \u2014 was previously ~25-50x the intended cost for that traffic class.",
-  "_modelIsASentinelNote": "`model`/`fastModel` name PROFILES in modelProfiles, not upstream models. The real model billed is that profile's `model`.",
-  "expectedVersion": "DeepSeek-V4-Flash-0731",
-  "denyModelPatterns": [
-    "deepseek-reasoner",
-    "deepseek-chat"
-  ],
+  "upstream": "https://api.minimax.io/anthropic",
+  "balanceUrl": "https://www.minimax.io/v1/token_plan/remains",
+  "balanceMethod": "GET",
+  "modelsUrl": "https://api.minimax.io/anthropic/v1/models",
+  "model": "mmclaude-m3-default",
+  "fastModel": "mmclaude-m2.5-background",
+  "nativeMultimodal": true,
+  "_fastModelNote": "Background work uses MiniMax-M2.5 with thinking when available, falling back to MiniMax-M2.7-highspeed with thinking; images and video stay native on M3.",
+  "_modelIsASentinelNote": "model and fastModel name local profiles. Profiles resolve to the configured MiniMax M3/M2.x model IDs.",
+  "expectedVersion": "MiniMax-M3",
+  "denyModelPatterns": ["minimax-", "openrouter/"],
   "effort": {
-    "slotDefaults": {
-      "background": "low",
-      "subagent": "high",
-      "main": "high"
-    },
-    "translate": {
-      "none": "none",
-      "off": "none",
-      "minimal": "low",
-      "low": "low",
-      "medium": "medium",
-      "high": "high",
-      "xhigh": "max",
-      "ultra": "ultra",
-      "max": "max"
-    },
+    "slotDefaults": {"background": "high", "subagent": "high", "main": "none"},
+    "translate": {"none": "none", "off": "none", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "max", "ultra": "max", "max": "max"},
     "ultrathinkPromotesToMax": true,
     "ultracodePromotesSubagents": true,
     "ultracodeSwarmHint": true,
-    "_ultracodeSwarmHintNote": "Appends an explicit parallel-dispatch instruction to the system prompt on main-slot turns in an ultracode session. MEASURED from the ledger: a real ultracode run made 147 subagent requests over 35 minutes but never more than 7 at once, and 115 of its dispatch windows held exactly one \u2014 a parent emitting one Task block per turn and looping, where Claude emits 20+ in a single message. The shim throttles nothing (no queue, semaphore or concurrency cap exists), so the fan-out width is the model's own choice and asking explicitly is the only lever. Set false to remove the instruction.",
-    "heuristic": {
-      "enabled": true,
-      "threshold": 2,
-      "longPromptChars": 600,
-      "bigToolResultChars": 20000,
-      "manyMessages": 30,
-      "keywords": "\\b(why|root cause|debug|diagnose|investigate|race condition|deadlock|intermittent|regression|architect|architecture|design|refactor|redesign|prove|derive|trade-?offs?|optimi[sz]e|profile|bottleneck|threading|concurrency|memory leak|segfault|undefined behaviou?r)\\b",
-      "escalateTo": "ultra",
-      "onlyWhenAuto": true
-    },
+    "heuristic": {"enabled": true, "threshold": 2, "longPromptChars": 600, "bigToolResultChars": 20000, "manyMessages": 30, "keywords": "\\b(why|root cause|debug|diagnose|investigate|race condition|deadlock|intermittent|regression|architect|architecture|design|refactor|redesign|prove|derive|trade-?offs?|optimi[sz]e|profile|bottleneck|threading|concurrency|memory leak|segfault|undefined behaviou?r)\\b", "escalateTo": "max", "onlyWhenAuto": true},
     "ultracodeTtlMinutes": 120,
-    "_measuredEnum": "MEASURED 2026-08-06 from a live 400: low|medium|high|xhigh|ultra|max. There is NO none \u2014 thinking is disabled via thinking:{type:disabled} instead. `ultra` is undocumented.",
-    "ultrathinkEscalateTo": "max",
-    "_measuredLadder": "MEASURED 2026-08-06, hard problem, max_tokens=384000, no truncation: ultra=94857 chars thinking / 30911 out / 282s; max=128573 / 39136 / 391s. Non-overlapping ranges. max = +35% reasoning for +39% latency.",
     "autoLevel": "high",
-    "_autoSemantics": "MEASURED: Claude Code always sends an effort level, so there is no absent state. autoLevel (high) is treated as no-preference and may be escalated by the heuristic; any other level the user picks is honoured verbatim. ultrathink overrides both.",
-    "_backgroundNote": "Background is 'low', not 'none', by explicit request 2026-08-18: Claude Code's own background traffic (compaction, titles, older-Haiku routing) still gets a little reasoning. This costs more than 'none' did \u2014 that early return was the fix for a ~25-50x background-cost bug \u2014 but 'low' on Flash is the cheapest tier that still thinks."
+    "_comment": "MiniMax M3 thinking is binary: none/low become thinking disabled, while medium/high/xhigh/ultra/max become thinking adaptive. M2.x profiles are kept thinking-enabled. Client-facing effort levels are retained in the ledger and UI."
   },
-  "rates": {
-    "effectiveFrom": "2026-08-17",
-    "source": "https://api-docs.deepseek.com/quick_start/pricing",
-    "_comment": "OFF-PEAK rates, USD per 1,000,000 tokens. peakSurcharge doubles them inside its windows, which reproduces the published peak column exactly. Keyed by the REAL upstream model chosen in upstreamModels, not by the routing sentinel \u2014 priceUsage() is passed that model so a v4-pro main turn and a v4-flash subagent turn in the same session are priced apart.",
-    "_priceChange": "Checked against the live pricing page 2026-08-17: the announced increase HAS taken effect. v4-flash output went 0.28 -> 0.66 (2.4x) and cache-miss input 0.14 -> 0.22; the previous table here was the pre-increase 2026-08-06 one. v4-pro is a flat 3x v4-flash on every axis.",
-    "deepseek-v4-flash": {
-      "cacheHitInput": 0.007,
-      "cacheMissInput": 0.22,
-      "output": 0.66
-    },
-    "deepseek-v4-pro": {
-      "cacheHitInput": 0.022,
-      "cacheMissInput": 0.66,
-      "output": 1.98
-    }
-  },
-  "peakSurcharge": {
-    "_comment": "2x peak pricing. CONFIRMED LIVE 2026-08-17 against the pricing page ('Off-peak rates are 50% of peak rates'), so this is now enabled \u2014 it was announced-but-dormant when this config was written on 2026-08-06. Windows are UTC (09:00-12:00 and 14:00-18:00 Beijing = UTC+8) and match the published 01:00-04:00 / 06:00-10:00 UTC peak hours exactly.",
-    "enabled": true,
-    "multiplier": 2,
-    "utcWindows": [
-      [
-        1,
-        4
-      ],
-      [
-        6,
-        10
-      ]
-    ]
-  },
-  "cap": {
-    "dailyUsd": 5,
-    "_comment": "Rolling UTC day. Enforced on the conservative cost estimate. Raise with: dsv4shim-cap N"
-  },
-  "balance": {
-    "_comment": "GET /user/balance is an account endpoint: no tokens, no inference cost. Polling is activity-driven anyway \u2014 a sample taken once work quiesces brackets that work cleanly, which is what --reconcile needs.",
-    "settleSeconds": 60,
-    "idlePollSeconds": 3600,
-    "lowBalanceWarnUsd": 5
-  },
-  "burnRate": {
-    "windowMinutes": 15
-  },
-  "limits": {
-    "maxOutputTokens": 384000,
-    "maxRequestBytes": 268435456
-  },
+  "rates": {"_comment": "MiniMax Token Plan is quota/usage based rather than a local dollar budget. Zero rates avoid inventing a local price.", "MiniMax-M3": {"cacheHitInput": 0, "cacheMissInput": 0, "output": 0}},
+  "peakSurcharge": {"enabled": false, "multiplier": 1, "utcWindows": []},
+  "cap": {"dailyUsd": 0, "_comment": "Disabled. MiniMax enforces Token Plan quota; MMClaude reports local token usage and live remaining quota."},
+  "balance": {"_comment": "Subscription quota is used first; purchased Credits automatically cover eligible Token Plan overflow.", "settleSeconds": 60, "idlePollSeconds": 900, "lowBalanceWarnUsd": 0},
+  "burnRate": {"windowMinutes": 15},
+  "limits": {"maxOutputTokens": 384000, "maxRequestBytes": 67108864},
   "desktop": {
-    "_comment": "Claude Desktop/Cowork model discovery (GET /v1/models). External, Claude-looking model IDs exposed for each logical tier \u2014 all four ultimately reach `model` (deepseek-v4-flash) only, never deepseek-v4-pro: transformRequest() force-sets the outgoing model on every /v1/messages call regardless of which tier resolved it. Optional \u2014 omitting this key entirely falls back to the same IDs hard-coded in shim.mjs.",
-    "tierModelIds": {
-      "opus": "claude-opus-5",
-      "sonnet": "claude-sonnet-5",
-      "fable": "claude-fable-5",
-      "haiku": "claude-haiku-4-5-20251001"
-    },
-    "tierProfiles": {
-      "_comment": "Which modelProfiles entry each Claude Desktop/Cowork tier resolves to. The CLI does not need this \u2014 reroute points its env straight at the profile names.",
-      "opus": "deepseek-v4-pro-high",
-      "fable": "deepseek-v4-pro-max",
-      "sonnet": "deepseek-v4-flash-max",
-      "haiku": "deepseek-v4-flash-high"
-    }
+    "_comment": "Claude-looking logical tiers all resolve to MiniMax-M3; the displayed names describe the tier, not a different upstream model.",
+    "tierModelIds": {"opus": "claude-opus-mm3", "sonnet": "claude-sonnet-mm3", "fable": "claude-fable-mm3", "haiku": "claude-haiku-mm3"},
+    "tierProfiles": {"opus": "mmclaude-m3-thinking", "fable": "mmclaude-m3-thinking", "sonnet": "mmclaude-m2.7-thinking", "haiku": "mmclaude-m2.7-highspeed-thinking"}
   },
-  "temporal": {
-    "_comment": "Appends today's date to the system prompt. Claude Code sends no calendar date and DeepSeek has no clock, so without this the model infers 'today' from the last date mentioned in the transcript \u2014 producing wrong weekdays and wrong days-remaining once it starts scheduling. Set enabled:false to remove it.",
-    "_granularityNote": "DAY granularity, not clock time, and that is load-bearing: DeepSeek's cache keys on the prompt PREFIX and prices a hit ~30x under a miss, so a value that moved every minute would re-cache the whole conversation every turn. This changes once per local midnight.",
-    "enabled": true,
-    "timezone": ""
-  },
-  "_timezoneNote": "Empty means the host's own zone via Intl (Australia/Brisbane on these machines). Set an IANA name to pin it.",
-  "cacheHygiene": {
-    "stripUserId": true,
-    "stripCacheControl": true
-  },
-  "log": {
-    "verbose": false
-  },
-  "vision": {
-    "_comment": "Images are unsupported on DeepSeek Anthropic endpoint. The shim swaps each image for a text description from a vision model so DeepSeek keeps doing all coding/reasoning. Descriptions are cached by image hash: without that, resending a conversation would re-describe the same screenshot every turn AND mutate the prompt prefix, forfeiting DeepSeek 50x cache-hit discount.",
-    "enabled": true,
-    "model": "google/gemini-3.1-flash-lite",
-    "endpoint": "https://api.deepinfra.com/v1/openai/chat/completions",
-    "keyFile": "deepinfra-key",
-    "promptVersion": "v2",
-    "maxTokens": 1500,
-    "timeoutMs": 120000,
-    "cacheMaxAgeDays": 90,
-    "cacheMaxEntries": 5000,
-    "_cacheSweepNote": "Vision descriptions are cached forever otherwise. A daily sweep deletes entries older than cacheMaxAgeDays, then LRU-evicts down to cacheMaxEntries if still over. 0 disables either check.",
-    "rates": {
-      "inUsdPerM": 0.25,
-      "outUsdPerM": 1.5
-    },
-    "benchmark": "96.3% on real-image suite (8/9 on degraded-photo OCR, only model of 39 to read the handwritten phone number), 100% on UI screenshots, spotted inverted image; ~$0.38/100 screenshots, 14.0s avg. Runner-up google/gemini-2.0-flash-001: 92.6%, 7/9, ~$0.108/100, 18.8s (2026-08-06)",
-    "_promptNote": "Descriptions are deliberately task-agnostic: the cache is keyed on the image alone, so a description steered by one question would be wrongly replayed for later, different questions about the same image.",
-    "dailyCapUsd": 1.5,
-    "_capNote": "Enforced client-side from the ledger: DeepInfra exposes no balance or usage endpoint (every billing path 404s, /v1/me carries no billing fields), so the local ledger is the only record. Cached images are always served even past the cap, since replaying a cached description costs nothing."
-  },
+  "temporal": {"enabled": true, "timezone": ""},
+  "_timezoneNote": "Empty means the host's own zone via Intl.",
+  "cacheHygiene": {"stripUserId": true, "stripCacheControl": true},
+  "log": {"verbose": false},
+  "vision": {"_comment": "Disabled intentionally. MiniMax M3 accepts native image and video blocks through the Anthropic-compatible endpoint.", "enabled": false, "dailyCapUsd": 0},
   "modelProfiles": {
-    "_comment": "The single source of truth for what a requested model name resolves to. Key = the sentinel Claude Code is configured to send; value = the REAL upstream model, the default thinking level for that choice, and the ledger slot. Names are deliberately self-documenting (model + effort) because the model picker displays the raw name \u2014 an opaque sentinel leaves no way to tell which model or effort a menu entry means. `effort` is a DEFAULT: an effort the user picks explicitly still wins, exactly like the old tierDefaults.",
-    "deepseek-v4-pro-medium": {
-      "model": "deepseek-v4-pro",
-      "effort": "medium",
-      "slot": "main"
-    },
-    "deepseek-v4-pro-high": {
-      "model": "deepseek-v4-pro",
-      "effort": "high",
-      "slot": "main"
-    },
-    "deepseek-v4-pro-max": {
-      "model": "deepseek-v4-pro",
-      "effort": "max",
-      "slot": "main"
-    },
-    "deepseek-v4-flash-max": {
-      "model": "deepseek-v4-flash",
-      "effort": "max",
-      "slot": "main"
-    },
-    "deepseek-v4-flash-high": {
-      "model": "deepseek-v4-flash",
-      "effort": "high",
-      "slot": "main"
-    },
-    "deepseek-v4-flash-sub": {
-      "model": "deepseek-v4-flash",
-      "effort": "high",
-      "slot": "subagent"
-    },
-    "deepseek-v4-flash-low": {
-      "model": "deepseek-v4-flash",
-      "effort": "low",
-      "slot": "background"
-    }
+    "_comment": "M3 uses disabled/adaptive thinking; M2.x profiles are explicitly thinking-enabled. The local profile names keep Claude Code's tier routing stable.",
+    "mmclaude-m3-default": {"model": "MiniMax-M3", "effort": "none", "slot": "main"},
+    "mmclaude-m3-thinking": {"model": "MiniMax-M3", "effort": "high", "slot": "main"},
+    "mmclaude-m3-max": {"model": "MiniMax-M3", "effort": "max", "slot": "main"},
+    "mmclaude-m3-subagent": {"model": "MiniMax-M3", "effort": "high", "slot": "subagent"},
+    "mmclaude-m2.7-thinking": {"model": "MiniMax-M2.7", "effort": "high", "slot": "main"},
+    "mmclaude-m2.7-highspeed-thinking": {"model": "MiniMax-M2.7-highspeed", "effort": "high", "slot": "main"},
+    "mmclaude-m2.5-background": {"model": "MiniMax-M2.5", "fallbackModel": "MiniMax-M2.7-highspeed", "effort": "high", "slot": "background"}
   }
 }

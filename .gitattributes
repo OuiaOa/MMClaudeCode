@@ -1,6 +1,6 @@
 # core.autocrlf=true on this machine would otherwise convert these to CRLF on
 # checkout, which breaks a POSIX shell script's shebang and would silently
-# disable a hook reinstall (dsv4shim-update.mjs copies whatever git checks out,
+# disable a hook reinstall (mmclaude-update.mjs copies whatever git checks out,
 # verbatim, into .git/hooks/). Force LF regardless of the checking-out
 # machine's git config.
 bin/pre-push-hook.sh text eol=lf

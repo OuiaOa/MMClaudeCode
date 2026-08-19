@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Tests for bin/dsv4shim-scrub.mjs. The whole point of this module is "never delete something
+ * Tests for bin/mmclaude-scrub.mjs. The whole point of this module is "never delete something
  * we can't prove was safely copied first" — these tests exist mainly to prove that property
  * holds, not just that the happy path works.
  */
@@ -11,12 +11,12 @@ import { createRequire } from 'node:module';
 import {
   newBackupDir, scrubClaudeTranscripts, scrubClaudeMemories, scrubDesktopSidecars,
   scrubOpencodeSessions, describeCliRemoval, describeAppRemoval, performCliRemoval,
-} from './bin/dsv4shim-scrub.mjs';
+} from './bin/mmclaude-scrub.mjs';
 
 const require = createRequire(import.meta.url);
 const DatabaseSync = (() => { try { return require('node:sqlite').DatabaseSync; } catch { return null; } })();
 
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-scrub-test-'));
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'mmclaude-scrub-test-'));
 process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
 
 let pass = 0, fail = 0;
@@ -25,7 +25,7 @@ function check(name, cond, detail = '') {
   else { console.log(`  \x1b[31m✗\x1b[0m ${name}${detail ? `  -> ${detail}` : ''}`); fail++; }
 }
 
-console.log('\n\x1b[1mdsv4shim-scrub tests\x1b[0m\n');
+console.log('\n\x1b[1mmmclaude-scrub tests\x1b[0m\n');
 
 // --------------------------------------------------------------- claude transcript scrub
 console.log('\x1b[1mscrubClaudeTranscripts: verify-before-delete\x1b[0m');
@@ -148,7 +148,7 @@ if (!DatabaseSync) {
 console.log('\n\x1b[1mperformCliRemoval\x1b[0m');
 {
   const dir = path.join(SCRATCH, 'cli-removal');
-  const dataDir = path.join(dir, 'dsv4shim-data');
+  const dataDir = path.join(dir, 'mmclaude-data');
   const claudeHome = path.join(dir, 'claude-home');
   const binaryPath = path.join(dir, 'system-claude', 'claude');
   const credentialsPath = path.join(claudeHome, '.claude', '.credentials.json');
@@ -181,7 +181,7 @@ console.log('\n\x1b[1mperformCliRemoval\x1b[0m');
 
   // No binary available at all -- must degrade gracefully, not throw.
   const r3 = performCliRemoval({
-    binaryPath: null, dataDir: path.join(dir, 'dsv4shim-data-2'), credentialsPath, credentialsExist: false,
+    binaryPath: null, dataDir: path.join(dir, 'mmclaude-data-2'), credentialsPath, credentialsExist: false,
     platform: 'linux', backupDir: newBackupDir(dir, 'cli-credentials-3'),
   });
   check('no binary available: bundled is null, does not throw', r3.bundled === null);
