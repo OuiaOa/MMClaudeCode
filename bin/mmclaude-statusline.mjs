@@ -71,20 +71,20 @@ if (s.context_window?.used_percentage != null) {
   parts.push(`${col}ctx ${pct.toFixed(0)}%${C.r} ${C.dim}(${(used / 1000).toFixed(0)}k)${C.r}`);
 }
 
-// MiniMax Token Plan usage is quota-based, not a local dollar spend.
-if (l.inputTokens != null || l.outputTokens != null) {
-  const tokens = (l.inputTokens || 0) + (l.outputTokens || 0);
-  parts.push(`${C.grn}${tokens.toLocaleString('en-US')} tok${C.r}`);
+// MiniMax Token Plan is quota-based, not a per-token billing API. Show the provider's live
+// remaining percentages instead of the local response-token ledger, which is not the plan's
+// accounting unit. The full usage command still exposes request-level diagnostics.
+const q = l.quota || {};
+if (q.enabled && (q.remainingPercent != null || q.weeklyRemainingPercent != null)) {
+  const pct = v => v == null ? '?' : `${Number(v).toFixed(0)}%`;
+  const col = v => v != null && Number(v) <= 10 ? C.red : v != null && Number(v) <= 25 ? C.yel : C.grn;
+  parts.push(`${col(q.remainingPercent)}5h ${pct(q.remainingPercent)}${C.r}`);
+  parts.push(`${col(q.weeklyRemainingPercent)}wk ${pct(q.weeklyRemainingPercent)}${C.r}`);
+} else if (q.paused) {
+  parts.push(`${C.yel}quota paused${C.r}`);
+} else if (l.balance) {
+  parts.push(`${C.dim}quota live${C.r}`);
 }
-
-// burn rate
-if (l.burn?.tokensPerMin) {
-  parts.push(`${C.dim}${l.burn.tokensPerMin.toLocaleString('en-US')} tok/min${C.r}`);
-}
-
-// Keep the raw provider quota snapshot available in the full usage command; statusline only
-// indicates that a live snapshot exists because MiniMax can change its response fields.
-if (l.balance) parts.push(`${C.dim}quota live${C.r}`);
 
 if (!l.requests && !l.balance) parts.push(`${C.red}shim down${C.r}`);
 

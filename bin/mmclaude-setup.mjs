@@ -30,6 +30,28 @@ try { fs.chmodSync(CONFIG_DIR, 0o700); } catch { /* Windows */ }
 // config.json ships with the package; copy it in on first setup, never overwrite a tuned one.
 const cfgPath = path.join(CONFIG_DIR, 'config.json');
 if (!fs.existsSync(cfgPath)) fs.copyFileSync(path.join(ROOT, 'config.default.json'), cfgPath);
+// Existing installs keep their tuned config, but new safety sections must not remain absent
+// forever after an upgrade. Merge only missing owned defaults; preserve ports, model choices,
+// and other user edits. A pre-hardening config with no traffic policy also gets the safer
+// ultracode helper setting, which is the one migration that changes an old unsafe default.
+try {
+  const liveCfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8').replace(/^﻿/, ''));
+  const shippedCfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.default.json'), 'utf8'));
+  const hadTrafficPolicy = 'trafficPolicy' in liveCfg;
+  let changed = false;
+  for (const key of ['trafficPolicy', 'pausePolicy']) {
+    if (!(key in liveCfg) && shippedCfg[key]) { liveCfg[key] = shippedCfg[key]; changed = true; }
+  }
+  if (!hadTrafficPolicy && liveCfg.effort?.ultracodePromotesSubagents === true) {
+    liveCfg.effort.ultracodePromotesSubagents = false;
+    changed = true;
+  }
+  if (liveCfg.balance?._comment?.includes('purchased Credits automatically')) {
+    liveCfg.balance._comment = shippedCfg.balance._comment;
+    changed = true;
+  }
+  if (changed) fs.writeFileSync(cfgPath, JSON.stringify(liveCfg, null, 2) + '\n');
+} catch (e) { console.error(yel(`config safety migration skipped: ${e.message}`)); }
 
 // sentinel: what Claude Code presents to the shim, so the real key never enters its environment
 const sentinelPath = path.join(CONFIG_DIR, 'sentinel');
@@ -87,20 +109,27 @@ if (!WIN && fs.existsSync(denyListSrc) && !fs.existsSync(denyListDst)) {
   try { fs.chmodSync(denyListDst, 0o755); } catch { /* no-op on Windows filesystems */ }
 }
 
+const qualitySessionCommand = `node "${path.join(ROOT, 'bin', 'mmclaude-quality-session.mjs')}"`;
+const qualityCheckCommand = `node "${path.join(ROOT, 'bin', 'mmclaude-quality-check.mjs')}"`;
+const qualityHooks = {
+  SessionStart: [{ hooks: [{ type: 'command', command: qualitySessionCommand, timeout: 5 }] }],
+  // Async is important: tests provide feedback on the next turn without serialising Claude's
+  // edit loop, and the hook itself coalesces concurrent firings with a short-lived lock.
+  PostToolUse: [{ matcher: 'Edit|Write|NotebookEdit', hooks: [{ type: 'command', command: qualityCheckCommand, async: true, timeout: 120 }] }],
+};
+
 const settings = {
   env: {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     ANTHROPIC_AUTH_TOKEN: SENTINEL,
-    ANTHROPIC_MODEL: 'mmclaude-m3-default',
     ANTHROPIC_DEFAULT_OPUS_MODEL: 'mmclaude-m3-thinking',
+    ANTHROPIC_DEFAULT_FABLE_MODEL: 'mmclaude-m3-thinking',
     ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m2.7-thinking',
     ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mmclaude-m2.7-highspeed-thinking',
     ANTHROPIC_SMALL_FAST_MODEL: 'mmclaude-m2.5-background',
     // Subagents are helper/background work too: keep them on M2.5 when available, with the
     // profile's configured M2.7-highspeed fallback, rather than spending M3 quota on every fan-out task.
     CLAUDE_CODE_SUBAGENT_MODEL: 'mmclaude-m2.5-background',
-    ANTHROPIC_CUSTOM_MODEL_OPTION: 'mmclaude-m3-thinking',
-    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'MiniMax M3',
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
     CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: '1',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -117,8 +146,11 @@ const settings = {
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: '384000',
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '600000',
-    API_TIMEOUT_MS: '900000',
-    CLAUDE_STREAM_IDLE_TIMEOUT_MS: '900000',
+    // A Token Plan pause can span the remainder of the rolling five-hour interval. Keep the
+    // client request alive while the shim waits; ordinary upstream timeouts remain enforced by
+    // the shim itself.
+    API_TIMEOUT_MS: '21600000',
+    CLAUDE_STREAM_IDLE_TIMEOUT_MS: '21600000',
   },
   effortLevel: 'high',
   skipWebFetchPreflight: true,
@@ -137,9 +169,12 @@ const settings = {
   // confirmation, or back to 'bypassPermissions' if you want zero prompts again.
   permissions: { defaultMode: 'acceptEdits' },
   ...(statusline ? { statusLine: statusline } : {}),
-  ...(fs.existsSync(denyListDst) ? {
-    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `bash ${denyListDst}`, timeout: 5 }] }] },
-  } : {}),
+  hooks: {
+    ...(fs.existsSync(denyListDst) ? {
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `bash ${denyListDst}`, timeout: 5 }] }],
+    } : {}),
+    ...qualityHooks,
+  },
 };
 
 const sPath = path.join(PROFILE_DIR, 'settings.json');
@@ -182,21 +217,41 @@ if (!fs.existsSync(sPath)) {
                  dst[k] && typeof dst[k] === 'object' && !Array.isArray(dst[k])) merge(dst[k], v, here);
       }
     })(live, settings);
+    // Leave Claude Code's built-in Default row in charge of the default model. Older MMClaude
+    // releases exposed ANTHROPIC_MODEL and ANTHROPIC_CUSTOM_MODEL_OPTION, which produced an
+    // extra custom entry (and, worse, made the default profile look like a second model). Remove
+    // only values recognisably written by MMClaude; a deliberate user model remains untouched.
+    const ownProfile = v => typeof v === 'string' && /^mmclaude-(?:m3|m2\.7|m2\.5)/i.test(v);
+    if (ownProfile(live.env?.ANTHROPIC_MODEL)) {
+      delete live.env.ANTHROPIC_MODEL;
+      added.push('ANTHROPIC_MODEL (restored Claude Default)');
+    }
+    if (ownProfile(live.env?.ANTHROPIC_CUSTOM_MODEL_OPTION) || live.env?.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === 'MiniMax M3') {
+      delete live.env.ANTHROPIC_CUSTOM_MODEL_OPTION;
+      delete live.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME;
+      added.push('custom model option (removed duplicate)');
+    }
     // Refresh model sentinels that belong to MMClaude itself when a new release changes the
     // tier policy. Deliberate user model names are left untouched; only our own profile names
     // are migrated. This is what moves an existing install's subagents from the old M3 helper
     // profile to the quota-friendly M2.5 background profile on the next setup run.
     const ownedModelKeys = new Set([
-      'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL',
+      'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL',
       'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
       'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL',
-      'CLAUDE_CODE_BG_CLASSIFIER_MODEL', 'ANTHROPIC_CUSTOM_MODEL_OPTION',
+      'CLAUDE_CODE_BG_CLASSIFIER_MODEL',
     ]);
     for (const [k, v] of Object.entries(settings.env)) {
       if (!ownedModelKeys.has(k) || typeof v !== 'string') continue;
       if (typeof live.env?.[k] === 'string' && /^mmclaude-(?:m3|m2\.7|m2\.5)/i.test(live.env[k]) && live.env[k] !== v) {
         live.env[k] = v;
         added.push(`${k} (model policy updated)`);
+      }
+    }
+    for (const k of ['API_TIMEOUT_MS', 'CLAUDE_STREAM_IDLE_TIMEOUT_MS']) {
+      if (live.env?.[k] === '900000') {
+        live.env[k] = settings.env[k];
+        added.push(`${k} (extended for Token Plan pause windows)`);
       }
     }
     if (typeof live.env?.ANTHROPIC_BASE_URL === 'string' &&
@@ -218,6 +273,16 @@ if (!fs.existsSync(sPath)) {
         added.push('hooks.PreToolUse[deny-list]');
       }
     }
+    live.hooks ??= {};
+    const ensureQualityHook = (event, group) => {
+      live.hooks[event] ??= [];
+      const command = group.hooks?.[0]?.command;
+      const already = live.hooks[event].some(h =>
+        Array.isArray(h?.hooks) && h.hooks.some(hh => String(hh?.command || '') === command));
+      if (!already) { live.hooks[event].push(group); added.push(`hooks.${event}[quality]`); }
+    };
+    ensureQualityHook('SessionStart', qualityHooks.SessionStart[0]);
+    ensureQualityHook('PostToolUse', qualityHooks.PostToolUse[0]);
     if (added.length) {
       fs.writeFileSync(sPath, JSON.stringify(live, null, 2) + '\n');
       console.log(bold(`${sPath}: added ${added.length} new key(s): ${added.join(', ')}`));
@@ -227,6 +292,15 @@ if (!fs.existsSync(sPath)) {
   }
 }
 try { fs.chmodSync(sPath, 0o600); } catch { /* Windows */ }   // embeds the sentinel
+
+// Claude Code discovers portable agents and skills under its profile/config directory, not
+// beside the shim executable. Copy missing shipped assets on every setup so upgrades become
+// visible without overwriting anything the user has edited locally.
+try {
+  const { installPortableAssets } = await import('./mmclaude-reroute.mjs');
+  const assets = installPortableAssets(PROFILE_DIR, ROOT);
+  if (assets.length) console.log(`Installed portable assets: ${assets.join(', ')}`);
+} catch (e) { console.error(yel(`portable skill install skipped: ${e.message}`)); }
 
 // autostart
 if (!WIN && spawnSync('systemctl', ['--user', '--version'], { stdio: 'ignore' }).status === 0) {

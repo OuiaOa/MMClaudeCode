@@ -49,6 +49,7 @@ await new Promise(r => upstream.listen(port, '127.0.0.1', r));
 const base = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'config.default.json'), 'utf8'));
 const cfg = {...base, port: shimPort, upstream: `http://127.0.0.1:${port}/anthropic`, cap:{dailyUsd:0}, balance:{settleSeconds:99999,idlePollSeconds:99999},
   trafficPolicy:{maxConcurrent:2,maxBackgroundConcurrent:1,minStartIntervalMs:10,backgroundMinStartIntervalMs:10,maxQueue:64,backgroundMaxOutputTokens:8192,subagentMaxOutputTokens:16384},
+  pausePolicy:{enabled:false},
   nativeMultimodal:true};
 fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify(cfg));
 fs.writeFileSync(path.join(configDir, 'probe-results.json'), JSON.stringify({availableModels:['MiniMax-M3','MiniMax-M2.7','MiniMax-M2.7-highspeed','MiniMax-M2.5']}));

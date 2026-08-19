@@ -24,10 +24,7 @@ const input = rows.reduce((s, r) => s + (r.inputTokens || 0), 0);
 const output = rows.reduce((s, r) => s + (r.outputTokens || 0), 0);
 console.log(bold(`\nmmclaude usage — last ${days} day${days === 1 ? '' : 's'}\n`));
 console.log(`  requests       : ${num(rows.length)}`);
-console.log(`  input tokens   : ${num(input)}`);
-console.log(`  output tokens  : ${num(output)}`);
-console.log(`  total tokens   : ${num(input + output)}`);
-console.log(`  accounting     : MiniMax Token Plan usage (local ledger; no invented dollar cost)`);
+console.log(`  accounting     : MiniMax Token Plan quota (provider percentages; no invented token or dollar cost)`);
 
 const by = key => {
   const m = new Map();
@@ -36,9 +33,9 @@ const by = key => {
 };
 if (rows.length) {
   console.log(bold('\n  by slot'));
-  for (const [k, v] of by('slot')) console.log(`    ${String(k).padEnd(12)} ${String(v.n).padStart(5)} req  ${num(v.in).padStart(12)} in  ${num(v.out).padStart(10)} out`);
+  for (const [k, v] of by('slot')) console.log(`    ${String(k).padEnd(12)} ${String(v.n).padStart(5)} requests`);
   console.log(bold('\n  by thinking mode'));
-  for (const [k, v] of by('effort')) console.log(`    ${String(k).padEnd(12)} ${String(v.n).padStart(5)} req  ${num(v.in + v.out).padStart(12)} tokens`);
+  for (const [k, v] of by('effort')) console.log(`    ${String(k).padEnd(12)} ${String(v.n).padStart(5)} requests`);
 }
 
 let sentinel = '';
@@ -49,13 +46,16 @@ http.get({ host: '127.0.0.1', port, path: '/_mmclaude/usage', timeout: 2000, hea
     try {
       const s = JSON.parse(b);
       console.log(bold('\n  live'));
-      console.log(`    today          : ${num((s.inputTokens || 0) + (s.outputTokens || 0))} tokens`);
-      console.log(`    burn rate      : ${num(s.burn?.tokensPerMin)} tok/min`);
+      console.log(`    local requests : ${num(s.requests || 0)} (diagnostic ledger)`);
       if (s.traffic) console.log(`    traffic        : ${s.traffic.active}/${s.traffic.maxConcurrent} active, ${s.traffic.queued} queued (${s.traffic.maxBackgroundConcurrent} background lane)`);
+      if (s.quota?.enabled) {
+        const p = v => v == null ? 'unknown' : `${Number(v).toFixed(0)}% remaining`;
+        console.log(`    quota 5h       : ${p(s.quota.remainingPercent)}${s.quota.paused ? ` — PAUSED until ${s.quota.resumeAt || 'provider refresh'}` : ''}`);
+        console.log(`    quota weekly   : ${p(s.quota.weeklyRemainingPercent)}`);
+      }
       const q = s.balance;
       if (q) {
-        console.log(`    token plan     : quota snapshot polled ${q._polledAt || 'unknown'}`);
-        console.log(`    quota details  : ${JSON.stringify(q)}`);
+        console.log(`    quota polled   : ${q._polledAt || 'unknown'}`);
       } else console.log('    token plan     : no live quota snapshot yet');
       console.log('');
     } catch { console.log(dim('\n  (shim returned no live usage yet)\n')); }

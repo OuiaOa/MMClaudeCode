@@ -28,7 +28,7 @@
   "rates": {"_comment": "MiniMax Token Plan is quota/usage based rather than a local dollar budget. Zero rates avoid inventing a local price.", "MiniMax-M3": {"cacheHitInput": 0, "cacheMissInput": 0, "output": 0}},
   "peakSurcharge": {"enabled": false, "multiplier": 1, "utcWindows": []},
   "cap": {"dailyUsd": 0, "_comment": "Disabled. MiniMax enforces Token Plan quota; MMClaude reports local token usage and live remaining quota."},
-  "balance": {"_comment": "Subscription quota is used first; purchased Credits automatically cover eligible Token Plan overflow.", "settleSeconds": 60, "idlePollSeconds": 900, "lowBalanceWarnUsd": 0},
+  "balance": {"_comment": "Token Plan quota is polled separately from the local token ledger. MiniMax documents a separate pay-as-you-go key for bypassing a request limit; MMClaude never silently changes billing mode.", "settleSeconds": 60, "idlePollSeconds": 900, "lowBalanceWarnUsd": 0},
   "trafficPolicy": {
     "_comment": "Conservative Max Token Plan defaults: keep two agent lanes, one background lane, and pace starts so ultracode/swarm fan-out queues instead of exhausting the rolling quota.",
     "maxConcurrent": 2,
@@ -36,8 +36,17 @@
     "minStartIntervalMs": 1000,
     "backgroundMinStartIntervalMs": 1500,
     "maxQueue": 64,
+    "queueTimeoutMs": 900000,
     "backgroundMaxOutputTokens": 8192,
     "subagentMaxOutputTokens": 16384
+  },
+  "pausePolicy": {
+    "enabled": true,
+    "pauseBeforePercent": 2,
+    "pollIntervalMs": 30000,
+    "fallbackWaitMs": 300000,
+    "maxWaitMs": 21600000,
+    "_comment": "When the live Token Plan interval reaches this remaining percentage or reports exhausted, keep Claude requests open until end_time and then refresh. This preserves long-running goals across the 5-hour rolling window; the shim never silently switches to a separate pay-as-you-go key."
   },
   "burnRate": {"windowMinutes": 15},
   "limits": {"maxOutputTokens": 384000, "maxRequestBytes": 67108864},

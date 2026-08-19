@@ -50,7 +50,7 @@ vision key is required.
 mmclaude run                      launch Claude Code
 mmclaude run --effort ultracode   full fan-out
 mmclaude status                   shim state and stored keys
-mmclaude-usage                    token usage, burn rate, live Token Plan snapshot
+mmclaude-usage                    live 5-hour and weekly Token Plan percentages
 mmclaude cap 10                   optional local dollar cap
 ```
 
@@ -137,8 +137,16 @@ editing (`mmclaude stop && mmclaude start`, or `systemctl --user restart mmclaud
 | `balanceUrl` | MiniMax Token Plan remains API endpoint, polled for live quota snapshots. |
 | `cap.dailyUsd` | Optional local dollar-style guard; Token Plan quota remains authoritative. |
 | `trafficPolicy` | Concurrency, start pacing and helper output limits. Defaults to two active agent lanes and one background lane, so ultracode/swarm queues instead of bursting. |
+| `pausePolicy` | Pauses new upstream work when the live Token Plan interval is nearly exhausted, then refreshes at the provider's `end_time` so long-running goals can resume without losing their Claude session. |
 | `desktop.tierModelIds` | external Claude-looking model IDs Desktop discovers via `/v1/models`, one per logical tier (`opus`/`sonnet`/`fable`/`haiku`). Optional — omitting it falls back to the same IDs built into `shim.mjs`. |
 | `effort.tierDefaults` | reasoning-effort default per Desktop tier, used only when the client sends no explicit effort of its own. Optional, same fallback pattern as above. |
+
+The statusline and `mmclaude-usage` show MiniMax's provider-reported 5-hour and weekly
+remaining percentages. They do not label the local response-token ledger as plan usage; the
+ledger is retained only for request diagnostics. The pause policy is deliberately conservative: it waits for the rolling window and keeps the
+same Claude request open. MiniMax documents Token Plan and pay-as-you-go as separate API-key
+modes, so the shim never silently switches to a potentially billed fallback key. If you choose
+to use pay-as-you-go Credits instead, change the configured key explicitly and restart the shim.
 
 ## Troubleshooting
 

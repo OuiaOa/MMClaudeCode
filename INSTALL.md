@@ -214,7 +214,7 @@ mmclaude-usage
 | `mmclaude run` | start a session |
 | `mmclaude run --resume` | resume this folder's last session |
 | `mmclaude run --effort ultracode` | maximum thoroughness, multi-agent |
-| `mmclaude-usage` | token burn rate, live Token Plan quota and traffic queue |
+| `mmclaude-usage` | live 5-hour and weekly Token Plan percentages, pause/resume state and traffic queue |
 | `mmclaude cap 10` | set the daily spend limit to $10 |
 | `mmclaude status` | is the service up, which keys are stored |
 | `mmclaude help <command>` | detail on any command |

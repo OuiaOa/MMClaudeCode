@@ -427,6 +427,7 @@ function environmentSanitizer(body) {
  * background sentinel for exactly that reason.
  */
 const CURRENT_MAIN_MODELS = [
+  /^claude-sonnet-4(?:-|\b)/i,
   /^claude-opus-5\b/i,
   /^claude-sonnet-5\b/i,
   /^claude-fable-5\b/i,
@@ -1587,6 +1588,7 @@ function usageSummary() {
       balanceAvailable: false,
     },
     burn: burnRate(),
+    quota: quotaSnapshot(),
     traffic: trafficSnapshot(),
     // Peak-surcharge state, so the statusline shows the multiplier actually being charged
     // rather than re-deriving it and drifting. Exposed from the same peakMultiplier() that
@@ -1599,9 +1601,102 @@ function usageSummary() {
   };
 }
 
+// MiniMax Token Plan intervals are rolling windows. Keep the current quota state separate from
+// the local token ledger so a long-running Claude goal can wait for reset without pretending an
+// exhausted interval is a provider outage. The remains endpoint is metadata-only and does not
+// consume inference quota.
+const PAUSE = cfg.pausePolicy || {};
+const QUOTA_PAUSE_ENABLED = IS_MINIMAX && PAUSE.enabled !== false;
+const QUOTA_PAUSE_BEFORE_PERCENT = Math.max(0, Math.min(100, Number(PAUSE.pauseBeforePercent) || 2));
+const QUOTA_POLL_INTERVAL = Math.max(5_000, Number(PAUSE.pollIntervalMs) || 30_000);
+const QUOTA_FALLBACK_WAIT = Math.max(10_000, Number(PAUSE.fallbackWaitMs) || 300_000);
+const QUOTA_MAX_WAIT = Math.max(60_000, Number(PAUSE.maxWaitMs) || 21_600_000);
+let quotaState = {
+  paused: false, reason: null, resumeAt: 0, checkedAt: 0, model: null,
+  remainingPercent: null, weeklyRemainingPercent: null,
+  intervalUsageCount: null, intervalTotalCount: null,
+  weeklyUsageCount: null, weeklyTotalCount: null,
+  intervalEnd: 0, weeklyEnd: 0,
+};
+let balancePollPromise = null;
+
+function quotaRow(snapshot) {
+  const rows = Array.isArray(snapshot?.model_remains) ? snapshot.model_remains : [];
+  return rows.find(r => String(r?.model_name || '').toLowerCase() === 'general') || rows[0] || null;
+}
+
+function applyQuotaSnapshot(snapshot) {
+  if (!QUOTA_PAUSE_ENABLED || !snapshot) return;
+  const row = quotaRow(snapshot);
+  const now = Date.now();
+  quotaState.checkedAt = now;
+  quotaState.model = row?.model_name || null;
+  quotaState.remainingPercent = Number.isFinite(Number(row?.current_interval_remaining_percent))
+    ? Number(row.current_interval_remaining_percent) : null;
+  quotaState.weeklyRemainingPercent = Number.isFinite(Number(row?.current_weekly_remaining_percent))
+    ? Number(row.current_weekly_remaining_percent) : null;
+  quotaState.intervalUsageCount = Number.isFinite(Number(row?.current_interval_usage_count))
+    ? Number(row.current_interval_usage_count) : null;
+  quotaState.intervalTotalCount = Number.isFinite(Number(row?.current_interval_total_count))
+    ? Number(row.current_interval_total_count) : null;
+  quotaState.weeklyUsageCount = Number.isFinite(Number(row?.current_weekly_usage_count))
+    ? Number(row.current_weekly_usage_count) : null;
+  quotaState.weeklyTotalCount = Number.isFinite(Number(row?.current_weekly_total_count))
+    ? Number(row.current_weekly_total_count) : null;
+  quotaState.intervalEnd = Number.isFinite(Number(row?.end_time)) ? Number(row.end_time) : 0;
+  quotaState.weeklyEnd = Number.isFinite(Number(row?.weekly_end_time)) ? Number(row.weekly_end_time) : 0;
+  const status = row?.current_interval_status;
+  const exhausted = status !== undefined && Number(status) !== 1;
+  const nearlyEmpty = quotaState.remainingPercent !== null && quotaState.remainingPercent <= QUOTA_PAUSE_BEFORE_PERCENT;
+  const end = Number(row?.end_time);
+  if ((exhausted || nearlyEmpty) && Number.isFinite(end) && end > now) {
+    quotaState.paused = true;
+    quotaState.reason = exhausted ? 'provider interval exhausted' : `only ${quotaState.remainingPercent}% remains`;
+    quotaState.resumeAt = end;
+    log(`MiniMax Token Plan pause armed: ${quotaState.reason}; resumes around ${new Date(end).toISOString()}`);
+  } else if (quotaState.paused && (!Number.isFinite(end) || end <= now || (!exhausted && !nearlyEmpty))) {
+    quotaState = { ...quotaState, paused: false, reason: null, resumeAt: 0 };
+    log('MiniMax Token Plan interval appears available again; resuming queued work');
+  }
+}
+
+function quotaPausedNow() {
+  if (!quotaState.paused) return false;
+  if (quotaState.resumeAt && quotaState.resumeAt <= Date.now()) {
+    quotaState.paused = false;
+    quotaState.reason = null;
+    quotaState.resumeAt = 0;
+    return false;
+  }
+  return true;
+}
+
+function quotaSnapshot() {
+  return {
+    enabled: QUOTA_PAUSE_ENABLED,
+    paused: quotaPausedNow(),
+    reason: quotaState.reason,
+    resumeAt: quotaState.resumeAt ? new Date(quotaState.resumeAt).toISOString() : null,
+    remainingPercent: quotaState.remainingPercent,
+    weeklyRemainingPercent: quotaState.weeklyRemainingPercent,
+    intervalUsageCount: quotaState.intervalUsageCount,
+    intervalTotalCount: quotaState.intervalTotalCount,
+    weeklyUsageCount: quotaState.weeklyUsageCount,
+    weeklyTotalCount: quotaState.weeklyTotalCount,
+    intervalEnd: quotaState.intervalEnd ? new Date(quotaState.intervalEnd).toISOString() : null,
+    weeklyEnd: quotaState.weeklyEnd ? new Date(quotaState.weeklyEnd).toISOString() : null,
+    model: quotaState.model,
+    checkedAt: quotaState.checkedAt ? new Date(quotaState.checkedAt).toISOString() : null,
+  };
+}
+
+applyQuotaSnapshot(readJson(BALANCE_FILE, null));
+
 // ---------------------------------------------------------------- balance poll
 
 function pollBalance() {
+  if (balancePollPromise) return balancePollPromise;
+  balancePollPromise = new Promise(resolve => {
   const endpoint = new URL(cfg.balanceUrl || 'https://www.minimax.io/v1/token_plan/remains');
   const method = cfg.balanceMethod || 'GET';
   const req = (endpoint.protocol === 'http:' ? http : https).request({
@@ -1616,11 +1711,12 @@ function pollBalance() {
     let b = '';
     res.on('data', d => { b += d; });
     res.on('end', () => {
-      if (res.statusCode !== 200) { vlog('balance poll HTTP', res.statusCode); return; }
+      if (res.statusCode !== 200) { quotaState.checkedAt = Date.now(); vlog('balance poll HTTP', res.statusCode); resolve(null); return; }
       try {
         const j = JSON.parse(b);
         j._polledAt = new Date().toISOString();
         fs.writeFileSync(BALANCE_FILE, JSON.stringify(j, null, 2));
+        applyQuotaSnapshot(j);
         // Append a compact history for the local monitor. MiniMax Token Plan usage is not a
         // dollar balance, so this is a quota snapshot rather than a spend-reconciliation series.
         const info = (j.balance_infos || [])[0];
@@ -1638,12 +1734,50 @@ function pollBalance() {
         else if (info && parseFloat(info.total_balance) < (cfg.balance?.lowBalanceWarnUsd ?? 5)) {
           log(`WARN: low balance ${info.total_balance} ${info.currency}`);
         }
-      } catch (e) { vlog('balance parse failed:', e.message); }
+        resolve(j);
+      } catch (e) { quotaState.checkedAt = Date.now(); vlog('balance parse failed:', e.message); resolve(null); }
     });
   });
   req.on('timeout', () => req.destroy());
-  req.on('error', e => vlog('balance poll error:', e.message));
+  req.on('error', e => { quotaState.checkedAt = Date.now(); vlog('balance poll error:', e.message); resolve(null); });
   req.end();
+  }).finally(() => { balancePollPromise = null; });
+  return balancePollPromise;
+}
+
+async function waitForQuotaWindow(cancelled = () => false) {
+  if (!QUOTA_PAUSE_ENABLED) return true;
+  for (;;) {
+    if (cancelled()) return false;
+    if (Date.now() - quotaState.checkedAt >= QUOTA_POLL_INTERVAL) await pollBalance();
+    if (!quotaPausedNow()) return true;
+    const until = quotaState.resumeAt > Date.now() ? quotaState.resumeAt - Date.now() : QUOTA_FALLBACK_WAIT;
+    const delay = Math.min(QUOTA_MAX_WAIT, Math.max(1_000, until + 1_000));
+    vlog(`Token Plan paused (${quotaState.reason || 'interval limit'}); waiting ${Math.ceil(delay / 1000)}s`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+    quotaState.checkedAt = 0;
+  }
+}
+
+function isQuotaLimitResponse(status, text) {
+  if (!QUOTA_PAUSE_ENABLED || ![402, 403, 429].includes(status)) return false;
+  return /token.?plan|quota|5.?hour|usage limit|remaining|rate.?limit|too many requests/i.test(String(text || ''));
+}
+
+function armQuotaPauseFromResponse(status, text, headers = {}) {
+  let retryMs = Number(headers['retry-after']) * 1000;
+  if (!Number.isFinite(retryMs) || retryMs <= 0) retryMs = 0;
+  try {
+    const parsed = JSON.parse(text);
+    applyQuotaSnapshot(parsed);
+  } catch { /* provider error need not be JSON */ }
+  const known = quotaState.resumeAt > Date.now() ? quotaState.resumeAt - Date.now() : 0;
+  const delay = Math.min(QUOTA_MAX_WAIT, Math.max(retryMs, known, QUOTA_FALLBACK_WAIT));
+  quotaState.paused = true;
+  quotaState.reason = `MiniMax HTTP ${status} quota response`;
+  quotaState.resumeAt = Date.now() + delay;
+  quotaState.checkedAt = Date.now();
+  log(`MiniMax quota response received; holding requests for about ${Math.ceil(delay / 1000)}s`);
 }
 
 // ---------------------------------------------------------- Token Plan traffic gate
@@ -1665,15 +1799,21 @@ let trafficBackgroundActive = 0;
 let trafficLastStart = 0;
 let trafficLastBackgroundStart = 0;
 let trafficDrainTimer = null;
+let trafficDrainDue = 0;
+let quotaWakeTimer = null;
 
 function trafficPriority(slot) { return slot === 'background' ? 2 : slot === 'subagent' ? 1 : 0; }
 
 function scheduleTrafficDrain(delay) {
-  if (trafficDrainTimer) return;
+  const due = Date.now() + Math.max(1, delay);
+  if (trafficDrainTimer && trafficDrainDue <= due) return;
+  if (trafficDrainTimer) clearTimeout(trafficDrainTimer);
+  trafficDrainDue = due;
   trafficDrainTimer = setTimeout(() => {
     trafficDrainTimer = null;
+    trafficDrainDue = 0;
     drainTraffic();
-  }, Math.max(1, delay));
+  }, Math.max(1, due - Date.now()));
 }
 
 function drainTraffic() {
@@ -1688,7 +1828,20 @@ function drainTraffic() {
       item.resolve(null);
     }
   }
-  if (!trafficQueue.length || trafficActive >= TRAFFIC_MAX) return;
+  if (!trafficQueue.length) return;
+  if (quotaPausedNow()) {
+    if (!quotaWakeTimer) {
+      const delay = Math.min(QUOTA_MAX_WAIT, Math.max(1_000, (quotaState.resumeAt || now + QUOTA_FALLBACK_WAIT) - now + 1_000));
+      quotaWakeTimer = setTimeout(() => {
+        quotaWakeTimer = null;
+        quotaState.checkedAt = 0;
+        pollBalance().finally(() => drainTraffic());
+      }, delay);
+    }
+    return;
+  }
+  let nextDelay = Math.min(...trafficQueue.map(item => TRAFFIC_QUEUE_TIMEOUT - (now - item.enqueuedAt)));
+  if (trafficActive >= TRAFFIC_MAX) { scheduleTrafficDrain(nextDelay); return; }
 
   trafficQueue.sort((a, b) => trafficPriority(a.slot) - trafficPriority(b.slot) || a.enqueuedAt - b.enqueuedAt);
   let index = -1;
@@ -1698,7 +1851,7 @@ function drainTraffic() {
     index = i;
     break;
   }
-  if (index < 0) return;
+  if (index < 0) { scheduleTrafficDrain(nextDelay); return; }
 
   const item = trafficQueue[index];
   const wait = Math.max(
@@ -1706,7 +1859,7 @@ function drainTraffic() {
     item.slot === 'background' ? trafficLastBackgroundStart + TRAFFIC_BG_INTERVAL - now : 0,
   );
   if (wait > 0) {
-    scheduleTrafficDrain(wait);
+    scheduleTrafficDrain(Math.min(nextDelay, wait));
     return;
   }
 
@@ -1752,6 +1905,7 @@ function trafficSnapshot() {
     backgroundActive: trafficBackgroundActive,
     maxBackgroundConcurrent: TRAFFIC_BG_MAX,
     minStartIntervalMs: TRAFFIC_MIN_INTERVAL,
+    quota: quotaSnapshot(),
   };
 }
 
@@ -1878,7 +2032,8 @@ async function handleMessages(req, res, rawBody) {
     }
   });
 
-  function sendUpstream(attempt) {
+  async function sendUpstream(attempt) {
+    if (!(await waitForQuotaWindow(() => clientAborted)) || clientAborted) return;
     const ticket = reserveTraffic(resolved.slot);
     pendingTrafficTicket = ticket;
     if (ticket.rejected) {
@@ -1963,6 +2118,12 @@ async function handleMessages(req, res, rawBody) {
         const buf = Buffer.concat(outChunks).toString('utf8');
         let out = buf;
         if (!ok) {
+          if (isQuotaLimitResponse(status, buf)) {
+            armQuotaPauseFromResponse(status, buf, upRes.headers);
+            release();
+            if (!clientAborted) sendUpstream(attempt);
+            return;
+          }
           out = rewriteError(status, buf);
           log(`upstream ${status}: ${out.slice(0, 400)}`);
           // Failures are recorded too. Without this the ledger holds successes only, so

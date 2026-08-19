@@ -33,7 +33,6 @@ export function buildRerouteEnv({ port, sentinel }) {
     // states the real model AND its thinking level — that is the only way to tell from the menu
     // what an entry actually connects to. No ANTHROPIC_CUSTOM_MODEL_OPTION: it added a sixth,
     // duplicate entry to a menu that already lists every tier.
-    ANTHROPIC_MODEL: 'mmclaude-m3-default',
     ANTHROPIC_DEFAULT_OPUS_MODEL: 'mmclaude-m3-thinking',
     ANTHROPIC_DEFAULT_FABLE_MODEL: 'mmclaude-m3-thinking',
     ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m2.7-thinking',
@@ -53,8 +52,10 @@ export function buildRerouteEnv({ port, sentinel }) {
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: '384000',
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '600000',
-    API_TIMEOUT_MS: '900000',
-    CLAUDE_STREAM_IDLE_TIMEOUT_MS: '900000',
+    // Token Plan pauses can last until the rolling five-hour interval ends; keep the Claude
+    // request alive while the shim waits, while the shim still enforces its own upstream timeouts.
+    API_TIMEOUT_MS: '21600000',
+    CLAUDE_STREAM_IDLE_TIMEOUT_MS: '21600000',
   };
 }
 
@@ -83,6 +84,9 @@ export function buildRerouteExtras({ rootDir, platform = process.platform }) {
   // Where applyCliReroute() should copy agents/ and skills/ FROM. Carried as an extra so the
   // caller does not need to know the layout of the install directory.
   extras.assetsRoot = rootDir;
+  // Also carry the quality hooks into a rerouted real profile. They run local checks in the
+  // background and add one SessionStart reminder; Claude's normal loop remains unchanged.
+  extras.qualityRoot = rootDir;
   return extras;
 }
 
@@ -117,6 +121,26 @@ export function installPortableAssets(configDir, rootDir) {
   return installed;
 }
 
+function installQualityHooks(settings, rootDir) {
+  const session = path.join(rootDir, 'bin', 'mmclaude-quality-session.mjs');
+  const check = path.join(rootDir, 'bin', 'mmclaude-quality-check.mjs');
+  if (!fs.existsSync(session) || !fs.existsSync(check)) return [];
+  settings.hooks ??= {};
+  const additions = [];
+  const groups = {
+    SessionStart: { hooks: [{ type: 'command', command: `node "${session}"`, timeout: 5 }] },
+    PostToolUse: { matcher: 'Edit|Write|NotebookEdit', hooks: [{ type: 'command', command: `node "${check}"`, async: true, timeout: 120 }] },
+  };
+  for (const [event, group] of Object.entries(groups)) {
+    settings.hooks[event] ??= [];
+    const command = group.hooks[0].command;
+    const already = settings.hooks[event].some(h =>
+      Array.isArray(h?.hooks) && h.hooks.some(hh => String(hh?.command || '') === command));
+    if (!already) { settings.hooks[event].push(group); additions.push(`hooks.${event}[quality]`); }
+  }
+  return additions;
+}
+
 /**
  * Apply the reroute to a settings.json, backing up the original first (or noting there was
  * nothing to back up, if the file didn't exist yet). Merges `env` key-by-key and each extras
@@ -139,15 +163,12 @@ export function installPortableAssets(configDir, rootDir) {
  * machine-specific and are never rewritten here.
  */
 const SHIM_OWNED_ENV = new Set([
-  'ANTHROPIC_MODEL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL',
   'CLAUDE_CODE_SUBAGENT_MODEL',
   'CLAUDE_CODE_BG_CLASSIFIER_MODEL',
-  'ANTHROPIC_CUSTOM_MODEL_OPTION',
-  'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
 ]);
 
 const isShimSentinel = (v) =>
@@ -171,6 +192,16 @@ export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) 
 
   live.env ??= {};
   const added = [];
+  const ownProfile = v => typeof v === 'string' && /^mmclaude-(?:m3|m2\.7|m2\.5)/i.test(v);
+  if (ownProfile(live.env.ANTHROPIC_MODEL)) {
+    delete live.env.ANTHROPIC_MODEL;
+    added.push('ANTHROPIC_MODEL (restored Claude Default)');
+  }
+  if (ownProfile(live.env.ANTHROPIC_CUSTOM_MODEL_OPTION) || live.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === 'MiniMax M3') {
+    delete live.env.ANTHROPIC_CUSTOM_MODEL_OPTION;
+    delete live.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME;
+    added.push('custom model option (removed duplicate)');
+  }
   for (const [k, v] of Object.entries(envBlock)) {
     if (!(k in live.env)) { live.env[k] = v; added.push(k); continue; }
     // A key already present is normally left alone, so a deliberate user override survives a
@@ -188,7 +219,7 @@ export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) 
 
   // assetsRoot and denyListSrc are instructions to THIS function, not settings keys — strip
   // them or they get written verbatim into the user's settings.json.
-  const { denyListSrc, assetsRoot: _assetsRoot, ...topLevelExtras } = extras;
+  const { denyListSrc, assetsRoot: _assetsRoot, qualityRoot: _qualityRoot, ...topLevelExtras } = extras;
   for (const [k, v] of Object.entries(topLevelExtras)) {
     if (!(k in live)) { live[k] = v; added.push(k); }
   }
@@ -206,6 +237,7 @@ export function applyCliReroute(settingsPath, envBlock, backupDir, extras = {}) 
       added.push('hooks.PreToolUse[deny-list]');
     }
   }
+  if (extras.qualityRoot) added.push(...installQualityHooks(live, extras.qualityRoot));
 
   // Agents and skills live in the CONFIG dir, which is the directory holding settings.json —
   // not the install dir the installers copy them to. Without this a rerouted machine has the
