@@ -141,6 +141,19 @@ editing (`mmclaude stop && mmclaude start`, or `systemctl --user restart mmclaud
 | `desktop.tierModelIds` | external Claude-looking model IDs Desktop discovers via `/v1/models`, one per logical tier (`opus`/`sonnet`/`fable`/`haiku`). Optional — omitting it falls back to the same IDs built into `shim.mjs`. |
 | `effort.tierDefaults` | reasoning-effort default per Desktop tier, used only when the client sends no explicit effort of its own. Optional, same fallback pattern as above. |
 
+### Sibling-safe ports
+
+`port` is the preferred port. At startup MMClaude checks whether it is live or reserved by
+another local service and walks upward to the next usable port when necessary. It also remembers
+the selected port in `~/.local/share/mmclaude/active-port.json`, so the profile, statusline and
+updater keep following an automatic shift.
+
+Installed sibling configs with a numeric `port` in `~/.config`, `~/.local/share`, or the local
+Codex workspace are treated as reservations even when the sibling is stopped. Every shim also
+records its claim in the shared `~/.config/codex-port-reservations.json` registry; future local
+programs can participate by writing an entry with their name and port. Set
+`CODEX_SHIM_PORT_REGISTRY` only when testing or intentionally using a separate registry.
+
 The statusline and `mmclaude-usage` show MiniMax's provider-reported 5-hour and weekly
 remaining percentages. They do not label the local response-token ledger as plan usage; the
 ledger is retained only for request diagnostics. The pause policy is deliberately conservative: it waits for the rolling window and keeps the

@@ -33,6 +33,7 @@ const REPO_URL = 'https://github.com/OuiaOa/MMClaudeCode.git';
 const DATA = process.env.MMCLAUDE_DATA_DIR || join(homedir(), '.local', 'share', 'mmclaude');
 const CONFIG = process.env.MMCLAUDE_CONFIG_DIR || join(homedir(), '.config', 'mmclaude');
 import { threeWayMerge } from './mmclaude-lib.mjs';
+import { configuredPort } from './mmclaude-port-manager.mjs';
 
 const CACHE = join(DATA, '.update-cache');
 const args = process.argv.slice(2);
@@ -218,11 +219,10 @@ function mergeConfig() {
  * socket only, below, for installs without the systemd unit.
  */
 function restartShim() {
-  const port = (() => {
-    try { return JSON.parse(readFileSync(join(CONFIG, 'config.json'), 'utf8')).port || 8788; } catch { return 8788; }
-  })();
+  const config = (() => { try { return JSON.parse(readFileSync(join(CONFIG, 'config.json'), 'utf8')); } catch { return {}; } })();
+  const port = configuredPort({ envVar: 'MMCLAUDE_PORT', dataDir: DATA, app: 'mmclaude', configPort: config.port, defaultPort: 8788 });
   const probe = run(process.execPath, ['-e',
-    `fetch('http://127.0.0.1:${port}/health').then(r=>console.log(r.status)).catch(()=>process.exit(3))`], DATA, 15000);
+    `fetch('http://127.0.0.1:${port}/_mmclaude/health').then(r=>console.log(r.status)).catch(()=>process.exit(3))`], DATA, 15000);
   if (!probe.ok) { log('shim not running — it starts on the new code next time'); return; }
 
   if (process.platform !== 'win32') {

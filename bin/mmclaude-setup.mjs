@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { choosePort, configuredPort, healthAt } from './mmclaude-port-manager.mjs';
 
 const HOME = os.homedir();
 const WIN = process.platform === 'win32';
@@ -93,7 +94,15 @@ if (needsProbe) {
 }
 
 // profile
-const port = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).port || 8788;
+const liveConfig = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+const configured = configuredPort({ envVar: 'MMCLAUDE_PORT', dataDir: DATA_DIR, app: 'mmclaude', configPort: liveConfig.port, defaultPort: 8788 });
+const preferred = Number.parseInt(process.env.MMCLAUDE_PORT || liveConfig.port || 8788, 10);
+const portSelection = await (await healthAt(configured, '/_mmclaude/health', 500)
+  ? Promise.resolve({ port: configured, preferredPort: preferred, shifted: configured !== preferred })
+  : choosePort({ app: 'mmclaude', envVar: 'MMCLAUDE_PORT', configDir: CONFIG_DIR, dataDir: DATA_DIR,
+      configPort: liveConfig.port, bind: liveConfig.bind || '127.0.0.1' }));
+const port = portSelection.port;
+if (portSelection.shifted) console.log(yel(`Port ${preferred} is reserved or busy; using ${port} for MMClaude.`));
 // Cross-platform on every OS — see mmclaude-statusline.mjs's header for why this replaced the
 // old bash+curl statusline.sh (that script never ran on Windows, which has no guaranteed
 // POSIX shell, so every Windows install silently missed the cost display entirely).

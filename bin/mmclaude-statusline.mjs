@@ -17,8 +17,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import { configuredPort } from './mmclaude-port-manager.mjs';
 
 const CONFIG_DIR = process.env.MMCLAUDE_CONFIG_DIR || path.join(os.homedir(), '.config', 'mmclaude');
+const DATA_DIR = process.env.MMCLAUDE_DATA_DIR || path.join(os.homedir(), '.local', 'share', 'mmclaude');
 
 function readStdin() {
   try { return fs.readFileSync(0, 'utf8'); } catch { return ''; }
@@ -27,8 +29,8 @@ function readStdin() {
 function readPort() {
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(CONFIG_DIR, 'config.json'), 'utf8'));
-    return Number(process.env.MMCLAUDE_PORT || cfg.port || 8788);
-  } catch { return 8788; }
+    return configuredPort({ envVar: 'MMCLAUDE_PORT', dataDir: DATA_DIR, app: 'mmclaude', configPort: cfg.port, defaultPort: 8788 });
+  } catch { return configuredPort({ envVar: 'MMCLAUDE_PORT', dataDir: DATA_DIR, app: 'mmclaude', defaultPort: 8788 }); }
 }
 
 function readSentinel() {

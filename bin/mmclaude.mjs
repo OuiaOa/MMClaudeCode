@@ -20,6 +20,7 @@ import os from 'node:os';
 import readline from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
 import { resolveClaude } from './mmclaude-lib.mjs';
+import { choosePort, configuredPort, healthAt, syncLoopbackProfile } from './mmclaude-port-manager.mjs';
 
 const HOME = os.homedir();
 const WIN = process.platform === 'win32';
@@ -38,7 +39,7 @@ const die = m => { console.error(red(m)); process.exit(1); };
 
 const readJson = (f, d = null) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
 const cfg = () => readJson(path.join(CONFIG_DIR, 'config.json'), {});
-const port = () => process.env.MMCLAUDE_PORT || cfg().port || 8788;
+const port = () => configuredPort({ envVar: 'MMCLAUDE_PORT', dataDir: DATA_DIR, app: 'mmclaude', configPort: cfg().port, defaultPort: 8788 });
 
 const PROVIDERS = {
   minimax: { file: 'key', label: 'MiniMax', verify: 'https://www.minimax.io/v1/token_plan/remains' },
@@ -99,15 +100,17 @@ function systemdAvailable() {
   return spawnSync('systemctl', ['--user', 'is-enabled', 'mmclaude-shim.service'], { stdio: 'ignore' }).status === 0;
 }
 
-async function health(ms = 1500) {
-  try {
-    const r = await fetch(`http://127.0.0.1:${port()}/_mmclaude/health`, { signal: AbortSignal.timeout(ms) });
-    return r.ok;
-  } catch { return false; }
-}
+async function health(ms = 1500, onPort = port()) { return healthAt(onPort, '/_mmclaude/health', ms); }
 
 async function cmdStart({ quiet = false } = {}) {
-  if (await health()) { if (!quiet) console.log('shim already running'); return true; }
+  const currentPort = port();
+  if (await health(1500, currentPort)) { if (!quiet) console.log(`shim already running on 127.0.0.1:${currentPort}`); return true; }
+  const selection = await choosePort({
+    app: 'mmclaude', envVar: 'MMCLAUDE_PORT', configDir: CONFIG_DIR, dataDir: DATA_DIR,
+    configPort: cfg().port, bind: cfg().bind || '127.0.0.1',
+  });
+  const selectedPort = selection.port;
+  syncLoopbackProfile(path.join(PROFILE_DIR, 'settings.json'), selectedPort);
   if (systemdAvailable()) {
     spawnSync('systemctl', ['--user', 'start', 'mmclaude-shim.service'], { stdio: 'ignore' });
   } else {
@@ -115,13 +118,13 @@ async function cmdStart({ quiet = false } = {}) {
     const out = fs.openSync(LOG_FILE, 'a');
     const child = spawn(process.execPath, [path.join(ROOT, 'shim.mjs')], {
       detached: true, stdio: ['ignore', out, out],
-      env: { ...process.env },
+      env: { ...process.env, MMCLAUDE_PORT: String(selectedPort) },
     });
     child.unref();
     fs.writeFileSync(PID_FILE, String(child.pid));
   }
-  for (let i = 0; i < 30; i++) { if (await health(800)) { if (!quiet) console.log('shim started'); return true; } await new Promise(r => setTimeout(r, 300)); }
-  console.error(red(`shim did not come up on 127.0.0.1:${port()}`));
+  for (let i = 0; i < 30; i++) { if (await health(800, selectedPort)) { if (!quiet) console.log(`shim started on 127.0.0.1:${selectedPort}${selection.shifted ? ` (preferred ${selection.preferredPort} was unavailable)` : ''}`); return true; } await new Promise(r => setTimeout(r, 300)); }
+  console.error(red(`shim did not come up on 127.0.0.1:${selectedPort}`));
   console.error(`  log: ${LOG_FILE}`);
   return false;
 }
@@ -134,8 +137,9 @@ function cmdStop() {
 }
 
 async function cmdStatus() {
-  const up = await health();
-  console.log(`shim      : ${up ? grn('running') : red('not running')} on 127.0.0.1:${port()}`);
+  const activePort = port();
+  const up = await health(1500, activePort);
+  console.log(`shim      : ${up ? grn('running') : red('not running')} on 127.0.0.1:${activePort}`);
   console.log(`autostart : ${systemdAvailable() ? 'systemd --user' : (WIN ? 'launcher-managed' : 'launcher-managed')}`);
   for (const [name, p] of Object.entries(PROVIDERS)) {
     const f = path.join(CONFIG_DIR, p.file);

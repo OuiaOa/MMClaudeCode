@@ -23,6 +23,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
+import { choosePort } from './bin/mmclaude-port-manager.mjs';
 
 const HOME = os.homedir();
 const CONFIG_DIR = process.env.MMCLAUDE_CONFIG_DIR || path.join(HOME, '.config', 'mmclaude');
@@ -2373,7 +2374,11 @@ const server = http.createServer((req, res) => {
   req.on('error', () => { try { res.destroy(); } catch {} });
 });
 
-const PORT = parseInt(process.env.MMCLAUDE_PORT || cfg.port || 8788, 10);
+const portSelection = await choosePort({
+  app: 'mmclaude', envVar: 'MMCLAUDE_PORT', configDir: CONFIG_DIR, dataDir: DATA_DIR,
+  configPort: cfg.port, bind: cfg.bind || '127.0.0.1',
+});
+const PORT = portSelection.port;
 const BIND = cfg.bind || '127.0.0.1';
 
 // Without this, an EADDRINUSE (leftover process still holding the port, or something else
@@ -2382,8 +2387,8 @@ const BIND = cfg.bind || '127.0.0.1';
 // failing. Exit distinctly so the failure is legible in `journalctl --user -u mmclaude-shim`.
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
-    console.error(`[mmclaude] FATAL: port ${PORT} is already in use (another shim instance? ` +
-      `check: lsof -i tcp:${PORT}). Not retrying — fix the conflict and restart the service.`);
+    console.error(`[mmclaude] FATAL: port ${PORT} became unavailable during startup; ` +
+      `run mmclaude start again and the next free sibling-safe port will be selected.`);
   } else {
     console.error(`[mmclaude] FATAL: server error: ${e.message}`);
   }
@@ -2392,6 +2397,7 @@ server.on('error', (e) => {
 
 server.listen(PORT, BIND, () => {
   log(`listening on http://${BIND}:${PORT} -> ${cfg.upstream}`);
+  if (portSelection.shifted) log(`preferred port ${portSelection.preferredPort} was unavailable; selected ${PORT}`);
   log(`model=${MODEL} effortField=${EFFORT_FIELD} effortSupported=${EFFORT_SUPPORTED} cap=$${readCap().toFixed(2)}/day`);
   if (!fs.existsSync(PROBE_FILE)) {
     log('WARN: no probe-results.json — using documented defaults. Run mmclaude-setup --probe to calibrate.');
