@@ -136,6 +136,7 @@ editing (`mmclaude stop && mmclaude start`, or `systemctl --user restart mmclaud
 | `rates` | Kept at zero for Token Plan use; usage is reported in tokens, not fabricated USD. |
 | `balanceUrl` | MiniMax Token Plan remains API endpoint, polled for live quota snapshots. |
 | `cap.dailyUsd` | Optional local dollar-style guard; Token Plan quota remains authoritative. |
+| `trafficPolicy` | Concurrency, start pacing and helper output limits. Defaults to two active agent lanes and one background lane, so ultracode/swarm queues instead of bursting. |
 | `desktop.tierModelIds` | external Claude-looking model IDs Desktop discovers via `/v1/models`, one per logical tier (`opus`/`sonnet`/`fable`/`haiku`). Optional — omitting it falls back to the same IDs built into `shim.mjs`. |
 | `effort.tierDefaults` | reasoning-effort default per Desktop tier, used only when the client sends no explicit effort of its own. Optional, same fallback pattern as above. |
 

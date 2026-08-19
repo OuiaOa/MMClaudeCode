@@ -42,6 +42,8 @@ console.log('\x1b[1mbuildRerouteEnv\x1b[0m');
     env.ANTHROPIC_DEFAULT_HAIKU_MODEL === 'mmclaude-m2.7-highspeed-thinking');
   check('claude-code\'s own background routing gets M2.5 with fallback',
     env.ANTHROPIC_SMALL_FAST_MODEL === 'mmclaude-m2.5-background');
+  check('subagents use the quota-friendly background profile',
+    env.CLAUDE_CODE_SUBAGENT_MODEL === 'mmclaude-m2.5-background');
   check('1M context window is advertised to the CLI',
     env.CLAUDE_CODE_MAX_CONTEXT_TOKENS === '1000000');
   check('fast/background model routes to the M2.5 profile', env.ANTHROPIC_SMALL_FAST_MODEL === 'mmclaude-m2.5-background');

@@ -190,7 +190,7 @@ async function cmdRun(rest) {
   if (fs.existsSync(srcDefault) || sourceArg.length > 0) {
     const r = spawnSync(process.execPath,
       [path.join(ROOT, 'bin', 'mmclaude-import'), '--auto', '--quiet', ...sourceArg],
-      { stdio: 'inherit' });
+      { stdio: 'inherit', env: { ...process.env, MMCLAUDE_HOME: HOME, MMCLAUDE_PROFILE: PROFILE_DIR } });
     if (r.status !== 0) console.error('mmclaude: import failed; continuing without it');
   }
 
@@ -327,9 +327,10 @@ Imported and prior sessions show up the normal Claude Code way -- the in-session
 Starts the shim if it is not already up. On first run, imports your existing memories,
 transcripts and permissions from ~/.claude (see mmclaude-import).
 
-Effort is chosen per task: background calls run with thinking off; routine and hard turns use
-MiniMax M3 adaptive thinking. The client-facing effort level is retained for routing and usage
-reports even though M3 exposes thinking as an on/off control.
+Effort is chosen per task: the default main turn uses M3 without thinking; Fable/Opus use M3
+thinking; Sonnet uses M2.7 thinking; Haiku and helper/background work use the faster M2.x tiers.
+Ultracode and swarm fan-out remain enabled, but the shim queues and paces helper calls for Token
+Plan safety.
 
 Screenshots and supported video blocks are passed directly to MiniMax M3.`,
 

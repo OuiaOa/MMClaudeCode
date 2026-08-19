@@ -42,7 +42,7 @@ export function buildRerouteEnv({ port, sentinel }) {
     // titles, compaction. Cheapest model, lowest thinking that still thinks.
     ANTHROPIC_SMALL_FAST_MODEL: 'mmclaude-m2.5-background',
     CLAUDE_CODE_BG_CLASSIFIER_MODEL: 'mmclaude-m2.5-background',
-    CLAUDE_CODE_SUBAGENT_MODEL: 'mmclaude-m3-subagent',
+    CLAUDE_CODE_SUBAGENT_MODEL: 'mmclaude-m2.5-background',
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
     CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: '1',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',

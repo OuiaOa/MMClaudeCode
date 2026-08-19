@@ -96,7 +96,9 @@ const settings = {
     ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m2.7-thinking',
     ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mmclaude-m2.7-highspeed-thinking',
     ANTHROPIC_SMALL_FAST_MODEL: 'mmclaude-m2.5-background',
-    CLAUDE_CODE_SUBAGENT_MODEL: 'mmclaude-m3-subagent',
+    // Subagents are helper/background work too: keep them on M2.5 when available, with the
+    // profile's configured M2.7-highspeed fallback, rather than spending M3 quota on every fan-out task.
+    CLAUDE_CODE_SUBAGENT_MODEL: 'mmclaude-m2.5-background',
     ANTHROPIC_CUSTOM_MODEL_OPTION: 'mmclaude-m3-thinking',
     ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'MiniMax M3',
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
@@ -180,6 +182,29 @@ if (!fs.existsSync(sPath)) {
                  dst[k] && typeof dst[k] === 'object' && !Array.isArray(dst[k])) merge(dst[k], v, here);
       }
     })(live, settings);
+    // Refresh model sentinels that belong to MMClaude itself when a new release changes the
+    // tier policy. Deliberate user model names are left untouched; only our own profile names
+    // are migrated. This is what moves an existing install's subagents from the old M3 helper
+    // profile to the quota-friendly M2.5 background profile on the next setup run.
+    const ownedModelKeys = new Set([
+      'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+      'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL',
+      'CLAUDE_CODE_BG_CLASSIFIER_MODEL', 'ANTHROPIC_CUSTOM_MODEL_OPTION',
+    ]);
+    for (const [k, v] of Object.entries(settings.env)) {
+      if (!ownedModelKeys.has(k) || typeof v !== 'string') continue;
+      if (typeof live.env?.[k] === 'string' && /^mmclaude-(?:m3|m2\.7|m2\.5)/i.test(live.env[k]) && live.env[k] !== v) {
+        live.env[k] = v;
+        added.push(`${k} (model policy updated)`);
+      }
+    }
+    if (typeof live.env?.ANTHROPIC_BASE_URL === 'string' &&
+        /^http:\/\/127\.0\.0\.1:\d+$/i.test(live.env.ANTHROPIC_BASE_URL) &&
+        live.env.ANTHROPIC_BASE_URL !== settings.env.ANTHROPIC_BASE_URL) {
+      live.env.ANTHROPIC_BASE_URL = settings.env.ANTHROPIC_BASE_URL;
+      added.push('ANTHROPIC_BASE_URL (port policy updated)');
+    }
     // hooks.PreToolUse is an array — the generic merge above only fills it in when missing
     // entirely. If it already exists (from an earlier setup, or the user's own hook), check
     // for our specific entry by command string and append rather than duplicate or clobber.
@@ -343,7 +368,12 @@ spawnSync(node, [path.join(ROOT, 'bin', 'mmclaude.mjs'), 'start'], { stdio: 'inh
     }
 
     const { applySourceDispositions } = await import('./mmclaude-setup-sources.mjs');
-    await applySourceDispositions({ sources: present, disposition, node, ROOT, PROFILE_DIR, DATA_DIR });
+    await applySourceDispositions({
+      sources: present, disposition, node, ROOT, PROFILE_DIR, DATA_DIR,
+      // Keep both source detection and the destination explicit for portable/standalone
+      // profiles; never let a temporary profile fall through to ~/.mmclaude.
+      importEnv: { MMCLAUDE_HOME: HOME, MMCLAUDE_PROFILE: PROFILE_DIR },
+    });
   }
 }
 

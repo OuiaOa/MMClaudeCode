@@ -18,17 +18,27 @@
     "slotDefaults": {"background": "high", "subagent": "high", "main": "none"},
     "translate": {"none": "none", "off": "none", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "max", "ultra": "max", "max": "max"},
     "ultrathinkPromotesToMax": true,
-    "ultracodePromotesSubagents": true,
+    "ultracodePromotesSubagents": false,
     "ultracodeSwarmHint": true,
     "heuristic": {"enabled": true, "threshold": 2, "longPromptChars": 600, "bigToolResultChars": 20000, "manyMessages": 30, "keywords": "\\b(why|root cause|debug|diagnose|investigate|race condition|deadlock|intermittent|regression|architect|architecture|design|refactor|redesign|prove|derive|trade-?offs?|optimi[sz]e|profile|bottleneck|threading|concurrency|memory leak|segfault|undefined behaviou?r)\\b", "escalateTo": "max", "onlyWhenAuto": true},
     "ultracodeTtlMinutes": 120,
     "autoLevel": "high",
-    "_comment": "MiniMax M3 thinking is binary: none/low become thinking disabled, while medium/high/xhigh/ultra/max become thinking adaptive. M2.x profiles are kept thinking-enabled. Client-facing effort levels are retained in the ledger and UI."
+    "_comment": "MiniMax M3 thinking is binary: none/low become thinking disabled, while medium/high/xhigh/ultra/max become thinking adaptive. M2.x profiles are kept thinking-enabled. Ultracode keeps the parent M3 thorough, while helper fan-out stays on the quota-friendly background profile."
   },
   "rates": {"_comment": "MiniMax Token Plan is quota/usage based rather than a local dollar budget. Zero rates avoid inventing a local price.", "MiniMax-M3": {"cacheHitInput": 0, "cacheMissInput": 0, "output": 0}},
   "peakSurcharge": {"enabled": false, "multiplier": 1, "utcWindows": []},
   "cap": {"dailyUsd": 0, "_comment": "Disabled. MiniMax enforces Token Plan quota; MMClaude reports local token usage and live remaining quota."},
   "balance": {"_comment": "Subscription quota is used first; purchased Credits automatically cover eligible Token Plan overflow.", "settleSeconds": 60, "idlePollSeconds": 900, "lowBalanceWarnUsd": 0},
+  "trafficPolicy": {
+    "_comment": "Conservative Max Token Plan defaults: keep two agent lanes, one background lane, and pace starts so ultracode/swarm fan-out queues instead of exhausting the rolling quota.",
+    "maxConcurrent": 2,
+    "maxBackgroundConcurrent": 1,
+    "minStartIntervalMs": 1000,
+    "backgroundMinStartIntervalMs": 1500,
+    "maxQueue": 64,
+    "backgroundMaxOutputTokens": 8192,
+    "subagentMaxOutputTokens": 16384
+  },
   "burnRate": {"windowMinutes": 15},
   "limits": {"maxOutputTokens": 384000, "maxRequestBytes": 67108864},
   "desktop": {

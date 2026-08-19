@@ -15,24 +15,40 @@ fs.writeFileSync(path.join(configDir, 'sentinel'), 'mm-test-sentinel');
 const port = 9921;
 const shimPort = 8821;
 const seen = [];
+let upstreamActive = 0;
+let maxUpstreamActive = 0;
+let backgroundUpstreamActive = 0;
+let maxBackgroundUpstreamActive = 0;
 const upstream = http.createServer((req, res) => {
   const chunks = [];
   req.on('data', d => chunks.push(d));
   req.on('end', () => {
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
     seen.push(body);
-    res.writeHead(200, {'content-type': body.stream ? 'text/event-stream' : 'application/json'});
-    if (body.stream) {
-      res.end('event: message_start\ndata: ' + JSON.stringify({type:'message_start',message:{usage:{input_tokens:12,output_tokens:1}}}) + '\n\n' +
-        'event: content_block_delta\ndata: ' + JSON.stringify({type:'content_block_delta',delta:{text:'ok'}}) + '\n\n' +
-        'event: message_delta\ndata: ' + JSON.stringify({type:'message_delta',usage:{output_tokens:3}}) + '\n\n' +
-        'event: message_stop\ndata: {"type":"message_stop"}\n\n');
-    } else res.end(JSON.stringify({id:'mm-test',type:'message',role:'assistant',model:body.model,content:[{type:'text',text:'ok'}],usage:{input_tokens:12,output_tokens:3}}));
+    upstreamActive++;
+    maxUpstreamActive = Math.max(maxUpstreamActive, upstreamActive);
+    const isBackground = body.model === 'MiniMax-M2.5' || body.model === 'MiniMax-M2.7-highspeed';
+    if (isBackground) {
+      backgroundUpstreamActive++;
+      maxBackgroundUpstreamActive = Math.max(maxBackgroundUpstreamActive, backgroundUpstreamActive);
+    }
+    setTimeout(() => {
+      res.writeHead(200, {'content-type': body.stream ? 'text/event-stream' : 'application/json'});
+      if (body.stream) {
+        res.end('event: message_start\ndata: ' + JSON.stringify({type:'message_start',message:{usage:{input_tokens:12,output_tokens:1}}}) + '\n\n' +
+          'event: content_block_delta\ndata: ' + JSON.stringify({type:'content_block_delta',delta:{text:'ok'}}) + '\n\n' +
+          'event: message_delta\ndata: ' + JSON.stringify({type:'message_delta',usage:{output_tokens:3}}) + '\n\n' +
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n');
+      } else res.end(JSON.stringify({id:'mm-test',type:'message',role:'assistant',model:body.model,content:[{type:'text',text:'ok'}],usage:{input_tokens:12,output_tokens:3}}));
+      upstreamActive--;
+      if (isBackground) backgroundUpstreamActive--;
+    }, 40);
   });
 });
 await new Promise(r => upstream.listen(port, '127.0.0.1', r));
 const base = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'config.default.json'), 'utf8'));
 const cfg = {...base, port: shimPort, upstream: `http://127.0.0.1:${port}/anthropic`, cap:{dailyUsd:0}, balance:{settleSeconds:99999,idlePollSeconds:99999},
+  trafficPolicy:{maxConcurrent:2,maxBackgroundConcurrent:1,minStartIntervalMs:10,backgroundMinStartIntervalMs:10,maxQueue:64,backgroundMaxOutputTokens:8192,subagentMaxOutputTokens:16384},
   nativeMultimodal:true};
 fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify(cfg));
 fs.writeFileSync(path.join(configDir, 'probe-results.json'), JSON.stringify({availableModels:['MiniMax-M3','MiniMax-M2.7','MiniMax-M2.7-highspeed','MiniMax-M2.5']}));
@@ -61,8 +77,14 @@ check('Background profile uses M2.5 when available', seen.at(-1)?.model === 'Min
 await send(msg('mmclaude-m2.5-background',{messages:[{role:'user',content:[{type:'text',text:'inspect this'},{type:'image',source:{type:'base64',media_type:'image/png',data:'aGVsbG8='}}]}]}));
 check('M3-compatible media remains native', Array.isArray(seen.at(-1)?.messages?.[0]?.content) && seen.at(-1).messages[0].content.some(x=>x.type==='image'));
 check('Claude effort fields are removed upstream', !('output_config' in seen.at(-1)) && !('reasoning' in seen.at(-1)));
+const concurrentMain = await Promise.all(Array.from({length:4}, () => send(msg('mmclaude-m3-default'))));
+check('main fan-out is queued at two concurrent upstream calls', concurrentMain.every(x=>x.status === 200) && maxUpstreamActive <= 2, String(maxUpstreamActive));
+const concurrentBackground = await Promise.all(Array.from({length:4}, () => send(msg('mmclaude-m2.5-background',{max_tokens:100000}))));
+const backgroundBodies = seen.slice(-4);
+check('background fan-out remains connected but uses one upstream lane', concurrentBackground.every(x=>x.status === 200) && maxBackgroundUpstreamActive <= 1, String(maxBackgroundUpstreamActive));
+check('background completions are capped', backgroundBodies.every(x=>x.max_tokens === 8192), JSON.stringify(backgroundBodies.map(x=>x.max_tokens)));
 const rows=fs.readFileSync(path.join(dataDir,'usage.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-check('usage ledger records MiniMax token usage', rows.length >= 6 && rows.every(x=>x.provider==='minimax' && x.inputTokens > 0));
+check('usage ledger records MiniMax token usage', rows.length >= 14 && rows.every(x=>x.provider==='minimax' && x.inputTokens > 0));
 console.log(`\n${pass} passed, ${fail} failed\n`);
 cleanup();
 if (fail) { console.error(log); process.exitCode=1; }

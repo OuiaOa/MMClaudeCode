@@ -51,6 +51,7 @@ http.get({ host: '127.0.0.1', port, path: '/_mmclaude/usage', timeout: 2000, hea
       console.log(bold('\n  live'));
       console.log(`    today          : ${num((s.inputTokens || 0) + (s.outputTokens || 0))} tokens`);
       console.log(`    burn rate      : ${num(s.burn?.tokensPerMin)} tok/min`);
+      if (s.traffic) console.log(`    traffic        : ${s.traffic.active}/${s.traffic.maxConcurrent} active, ${s.traffic.queued} queued (${s.traffic.maxBackgroundConcurrent} background lane)`);
       const q = s.balance;
       if (q) {
         console.log(`    token plan     : quota snapshot polled ${q._polledAt || 'unknown'}`);
