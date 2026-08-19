@@ -290,19 +290,26 @@ function capCmd(rest) {
 
 function help(topic) {
   const H = {
-    setup: `${bold('mmclaude setup')} [--rekey] [--reprobe]
+    setup: `${bold('mmclaude setup')} [--rekey] [--reprobe] [--use-existing-claude]
 
 First-time setup. Prompts for your MiniMax API key (hidden — never echoed, never in argv or
-shell history), probes the MiniMax endpoint, writes the isolated Claude Code profile, and starts
-the shim. MiniMax M3 receives image and video blocks natively; no vision sidecar key is needed.
+shell history), installs a private Claude Code runner, probes the MiniMax endpoint, writes the
+isolated profile, and starts the shim. MiniMax M3 receives image and video blocks natively; no
+vision sidecar key is needed.
 
   --rekey       replace the stored MiniMax key (also re-probes — a new key/account could
                 behave differently)
   --reprobe     force a fresh endpoint probe even if a cached result already exists
+  --use-existing-claude  reuse a Claude Code runner already installed on PATH instead of
+                         installing a private copy under ~/.local/share/mmclaude
 
 The probe (a few cents, but several minutes — it times real API calls at every effort level)
 only runs once and is cached; re-running setup later (e.g. to pick up a new feature) skips it
 by default instead of re-measuring something that hasn't changed.
+
+If a standard Claude profile is found, setup also offers an optional copy/move/leave migration
+for its project history, sessions, memories and permissions. It never reroutes the standard
+Claude settings; use --use-existing-claude only to reuse an existing CLI binary.
 
 Safe to re-run: an existing config.json is never overwritten.`,
 
@@ -376,8 +383,8 @@ ${bold('SERVICE')}
 ${bold('HELP')}
   mmclaude help <command>         detail on setup, key, run, cap, status
 
-Your normal 'claude' is untouched: this uses a separate profile at ~/.mmclaude and never
-reads your Anthropic credentials.
+Your normal 'claude' is untouched: this uses a private runner and separate profile at ~/.mmclaude
+and never reads your Anthropic credentials.
 `);
 }
 

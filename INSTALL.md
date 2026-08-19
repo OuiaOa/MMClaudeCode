@@ -10,7 +10,7 @@ a command, you can do this. Total time is about five minutes, most of it waiting
 You need three things. Check each one before going further — most installation problems are
 actually one of these missing.
 
-### 1. Node.js 20 or newer
+### 1. Node.js 22 or newer
 
 Open a terminal and run:
 
@@ -18,24 +18,20 @@ Open a terminal and run:
 node --version
 ```
 
-You should see `v20.x.x` or higher. If the command is not found, or the number is lower than
-20, install it:
+You should see `v22.x.x` or higher. If the command is not found, or the number is lower than
+22, install it:
 
 - **Windows** — download the LTS installer from [nodejs.org](https://nodejs.org), run it, then
   **close and reopen your terminal**. Windows only picks up the new PATH in fresh terminals.
 - **macOS** — `brew install node` if you use Homebrew, otherwise the installer from nodejs.org.
 - **Linux** — your distribution's package may be too old. Check with `node --version`; if it is
-  below 20, use [NodeSource](https://github.com/nodesource/distributions) or `nvm`.
+  below 22, use [NodeSource](https://github.com/nodesource/distributions) or `nvm`.
 
-### 2. The Claude Code CLI
+### 2. npm
 
-```
-claude --version
-```
-
-If that fails, install it from [claude.com/code](https://claude.com/code). You do **not** need
-an Anthropic subscription and you do **not** need to be logged in — this tool points Claude
-Code at MiniMax instead. If you *are* logged in, that stays untouched and keeps working.
+`npm` normally arrives with Node.js. Setup installs the official Claude Code package privately
+for this shim, so no global `claude` command or Anthropic account is required. If you already
+have Claude Code installed and want to reuse it, run `mmclaude setup --use-existing-claude`.
 
 ### 3. A MiniMax API key
 
@@ -165,8 +161,15 @@ deliberate, the key is never echoed to the screen, never written to your shell h
 never passed as a command argument where other programs could read it. It is checked against
 MiniMax immediately, so a mangled paste fails now rather than confusing you later.
 
-**2. Nothing else.** Setup then probes the MiniMax endpoint to work out how it actually
-behaves, writes an isolated Claude Code profile, and starts the background service.
+**2. A private Claude Code runner.** Setup installs the official Claude Code package under
+`~/.local/share/mmclaude/claude-code`; it does not modify or replace a global installation.
+
+**3. Optional migration.** If a standard Claude profile exists, setup offers safe choices to
+copy, move, or leave its sessions, memories, permissions and project history. Copy is the safe
+default. Standard Claude settings and credentials are never rerouted.
+
+Setup then probes the MiniMax endpoint, writes an isolated Claude Code profile, and starts the
+background service.
 
 You should see `Setup complete.` Then:
 
@@ -258,11 +261,9 @@ open a new terminal after installing. See the platform section above.
 `journalctl --user -u mmclaude-shim -n 50`. The usual cause is another program already
 using port 8788; change it with `"port": 8799` in `~/.config/mmclaude/config.json`.
 
-**`mmclaude run` says `'claude.cmd' is not recognized`** — older versions hardcoded the
-literal string `claude.cmd`, which `cmd.exe` treats as a fully-qualified filename and
-does not resolve via `PATHEXT`. mmclaude resolves `claude` via `PATHEXT` and falls
-back to common install locations (`%USERPROFILE%\.local\bin\`, `%APPDATA%\npm\`). If you
-still see this, install Claude Code from https://claude.com/code, then re-run.
+**`mmclaude run` cannot find Claude Code** — re-run `mmclaude setup` so it can install the
+private runner, or use `mmclaude setup --use-existing-claude` when a system runner is already
+installed somewhere outside PATH.
 
 **No sessions appear after `mmclaude-import --force`** — the importer walks recursively now,
 so subagent transcripts (`<session>/subagents/*.jsonl`) and tool-result blobs
