@@ -1750,7 +1750,11 @@ async function waitForQuotaWindow(cancelled = () => false) {
   if (!QUOTA_PAUSE_ENABLED) return true;
   for (;;) {
     if (cancelled()) return false;
-    if (Date.now() - quotaState.checkedAt >= QUOTA_POLL_INTERVAL) await pollBalance();
+    // A startup poll can complete before the provider has returned a usable interval end (or
+    // before a test/local relay has finished warming up). Do not let that incomplete snapshot
+    // suppress the first request's refresh for the whole poll interval; otherwise a nearly
+    // empty plan window can be missed and a request is sent during the last few seconds.
+    if (!quotaState.intervalEnd || Date.now() - quotaState.checkedAt >= QUOTA_POLL_INTERVAL) await pollBalance();
     if (!quotaPausedNow()) return true;
     const until = quotaState.resumeAt > Date.now() ? quotaState.resumeAt - Date.now() : QUOTA_FALLBACK_WAIT;
     const delay = Math.min(QUOTA_MAX_WAIT, Math.max(1_000, until + 1_000));

@@ -16,7 +16,10 @@ const upstreamPort = 9931;
 const shimPort = 8831;
 let quotaPaused = true;
 let upstreamCalls = 0;
-const resetAt = Date.now() + 150;
+// Set this after the shim is healthy below. Computing it before process startup made the
+// synthetic 150ms window expire on slower CI/Windows hosts before the first request began,
+// turning a valid pause test into a race.
+let resetAt = 0;
 const upstream = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/quota') {
     const row = {
@@ -60,6 +63,7 @@ let log = ''; shim.stdout.on('data', d => log += d); shim.stderr.on('data', d =>
 const cleanup = () => { try { shim.kill('SIGKILL'); } catch {} try { upstream.close(); } catch {} };
 process.on('exit', cleanup);
 for (let i = 0; i < 80; i++) { try { if ((await fetch(`http://127.0.0.1:${shimPort}/_mmclaude/health`)).ok) break; } catch {} await new Promise(r => setTimeout(r, 25)); }
+resetAt = Date.now() + 150;
 const body = { model:'mmclaude-m3-default', max_tokens:100, messages:[{role:'user',content:'wait for reset'}] };
 const started = Date.now();
 const request = fetch(`http://127.0.0.1:${shimPort}/v1/messages`, {method:'POST',headers:{authorization:'Bearer mm-test-sentinel','content-type':'application/json'},body:JSON.stringify(body)});

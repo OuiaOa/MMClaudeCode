@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 # POSIX convenience launcher; the cross-platform implementation lives in mmclaude.mjs.
 set -euo pipefail
+if [[ "${1:-}" == "web" || "${1:-}" == "capabilities" ]]; then
+  exec node "$(dirname "$0")/mmclaude.mjs" "$@"
+fi
 exec node "$(dirname "$0")/mmclaude.mjs" run "$@"
