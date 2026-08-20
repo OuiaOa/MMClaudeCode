@@ -34,6 +34,7 @@ const DATA = process.env.MMCLAUDE_DATA_DIR || join(homedir(), '.local', 'share',
 const CONFIG = process.env.MMCLAUDE_CONFIG_DIR || join(homedir(), '.config', 'mmclaude');
 import { threeWayMerge } from './mmclaude-lib.mjs';
 import { configuredPort } from './mmclaude-port-manager.mjs';
+import { installPortableAssets } from './mmclaude-reroute.mjs';
 
 const CACHE = join(DATA, '.update-cache');
 const args = process.argv.slice(2);
@@ -71,6 +72,7 @@ const installed = existsSync(markerPath) ? readFileSync(markerPath, 'utf8').trim
 
 if (installed === remote && !FORCE) {
   log(`already current (${remote.slice(0, 7)})`);
+  syncClaudeProfile();
   writeResult({ outcome: 'current', from: installed, to: remote });
   process.exit(0);
 }
@@ -123,6 +125,7 @@ function rollback(why) {
 
 // New config keys only — your keys, caps and model choices are never rewritten.
 mergeConfig();
+syncClaudeProfile();
 
 // ------------------------------------------------------------------ verify
 let failed = null;
@@ -200,6 +203,65 @@ function mergeConfig() {
     if (removed.length) log(`config.json: removed ${removed.length} superseded key(s): ${removed.join(', ')}`);
   }
   if (kept.length) log(`config.json: kept ${kept.length} local customisation(s): ${kept.join(', ')}`);
+}
+
+/**
+ * Keep an already-installed Claude profile aligned with the shim's model picker policy.
+ * Updating the runtime files alone is not enough: Claude reads these env values from the
+ * profile's settings.json, so an old profile can keep showing the removed custom/default rows
+ * forever. Only values recognisably written by MMClaude are migrated; user-selected model names
+ * remain untouched.
+ */
+function syncClaudeProfile() {
+  const profile = process.env.MMCLAUDE_PROFILE_DIR || join(homedir(), '.mmclaude');
+  const settingsPath = join(profile, 'settings.json');
+  const desired = {
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'mmclaude-m3-thinking',
+    ANTHROPIC_DEFAULT_FABLE_MODEL: 'mmclaude-m3-fable-thinking',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m2.7-thinking',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mmclaude-m2.7-highspeed-thinking',
+    ANTHROPIC_SMALL_FAST_MODEL: 'mmclaude-m2.5-background',
+    CLAUDE_CODE_SUBAGENT_MODEL: 'mmclaude-m2.5-background',
+    CLAUDE_CODE_BG_CLASSIFIER_MODEL: 'mmclaude-m2.5-background',
+  };
+  const ownProfile = value => typeof value === 'string' && /^mmclaude-(?:m3|m2\.7|m2\.5)/i.test(value);
+  let changed = false;
+
+  if (existsSync(settingsPath)) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8').replace(/^﻿/, ''));
+      settings.env ??= {};
+      if (ownProfile(settings.env.ANTHROPIC_MODEL)) {
+        delete settings.env.ANTHROPIC_MODEL;
+        changed = true;
+      }
+      if (ownProfile(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION) ||
+          /^MiniMax M3$/i.test(String(settings.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME || ''))) {
+        for (const key of ['ANTHROPIC_CUSTOM_MODEL_OPTION', 'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME', 'ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION']) {
+          if (key in settings.env) { delete settings.env[key]; changed = true; }
+        }
+      }
+      for (const [key, value] of Object.entries(desired)) {
+        if (!(key in settings.env) || (ownProfile(settings.env[key]) && settings.env[key] !== value)) {
+          settings.env[key] = value;
+          changed = true;
+        }
+      }
+      if (changed) {
+        writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+        log(`Claude profile model picker migrated: ${settingsPath}`);
+      }
+    } catch (e) {
+      warn(`Claude profile migration skipped: ${e.message}`);
+    }
+  }
+
+  try {
+    const assets = installPortableAssets(profile, DATA);
+    if (assets.length) log(`portable assets synced: ${assets.join(', ')}`);
+  } catch (e) {
+    warn(`portable asset sync skipped: ${e.message}`);
+  }
 }
 
 /**

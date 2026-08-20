@@ -157,7 +157,7 @@ const settings = {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
     ANTHROPIC_AUTH_TOKEN: SENTINEL,
     ANTHROPIC_DEFAULT_OPUS_MODEL: 'mmclaude-m3-thinking',
-    ANTHROPIC_DEFAULT_FABLE_MODEL: 'mmclaude-m3-thinking',
+    ANTHROPIC_DEFAULT_FABLE_MODEL: 'mmclaude-m3-fable-thinking',
     ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m2.7-thinking',
     ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mmclaude-m2.7-highspeed-thinking',
     ANTHROPIC_SMALL_FAST_MODEL: 'mmclaude-m2.5-background',

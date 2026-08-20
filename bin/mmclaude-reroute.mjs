@@ -34,7 +34,7 @@ export function buildRerouteEnv({ port, sentinel }) {
     // what an entry actually connects to. No ANTHROPIC_CUSTOM_MODEL_OPTION: it added a sixth,
     // duplicate entry to a menu that already lists every tier.
     ANTHROPIC_DEFAULT_OPUS_MODEL: 'mmclaude-m3-thinking',
-    ANTHROPIC_DEFAULT_FABLE_MODEL: 'mmclaude-m3-thinking',
+    ANTHROPIC_DEFAULT_FABLE_MODEL: 'mmclaude-m3-fable-thinking',
     ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m2.7-thinking',
     ANTHROPIC_DEFAULT_HAIKU_MODEL: 'mmclaude-m2.7-highspeed-thinking',
     // Whatever Claude Code routes background work to on its own — older Haiku generations,
@@ -164,6 +164,7 @@ function installQualityHooks(settings, rootDir) {
  */
 const SHIM_OWNED_ENV = new Set([
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL',

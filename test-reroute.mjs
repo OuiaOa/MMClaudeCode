@@ -30,7 +30,7 @@ console.log('\x1b[1mbuildRerouteEnv\x1b[0m');
   check('the built-in Default row is left in charge of the default profile', !('ANTHROPIC_MODEL' in env));
   // Fable has its own env var; leaving it unset is what made it fall through to the native
   // entry and ignore the Pro/max intent entirely.
-  check('fable gets the M3 thinking profile', env.ANTHROPIC_DEFAULT_FABLE_MODEL === 'mmclaude-m3-thinking');
+  check('fable gets its distinct M3 thinking profile', env.ANTHROPIC_DEFAULT_FABLE_MODEL === 'mmclaude-m3-fable-thinking');
   check('no duplicate custom-model entry is created',
     env.ANTHROPIC_CUSTOM_MODEL_OPTION === undefined && env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === undefined);
   // Each tier must arrive under its OWN name. One shared sentinel would make opus, sonnet and
@@ -38,6 +38,9 @@ console.log('\x1b[1mbuildRerouteEnv\x1b[0m');
   check('opus and sonnet use distinct tier sentinels',
     env.ANTHROPIC_DEFAULT_OPUS_MODEL !== env.ANTHROPIC_DEFAULT_SONNET_MODEL,
     `${env.ANTHROPIC_DEFAULT_OPUS_MODEL} vs ${env.ANTHROPIC_DEFAULT_SONNET_MODEL}`);
+  check('opus and fable keep distinct picker names',
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL !== env.ANTHROPIC_DEFAULT_FABLE_MODEL,
+    `${env.ANTHROPIC_DEFAULT_OPUS_MODEL} vs ${env.ANTHROPIC_DEFAULT_FABLE_MODEL}`);
   check('haiku is a deliberate pick: M2.7 highspeed thinking',
     env.ANTHROPIC_DEFAULT_HAIKU_MODEL === 'mmclaude-m2.7-highspeed-thinking');
   check('claude-code\'s own background routing gets M2.5 with fallback',
@@ -270,6 +273,7 @@ console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicat
   fs.writeFileSync(sp, JSON.stringify({
     env: {
       ANTHROPIC_MODEL: 'mmclaude-m2.7-highspeed-thinking', // stale sentinel -> must refresh
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'mmclaude-m3-thinking', // stale from the collapsed Opus/Fable scheme
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'mmclaude-m3-thinking', // stale from a PREVIOUS scheme
       ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'MiniMax M3',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999',       // machine-specific -> never touched
@@ -286,6 +290,8 @@ console.log('\n\x1b[1mapplyCliReroute: deny-list hook is deduped, never duplicat
   check('opus and sonnet end up distinguishable',
     after.ANTHROPIC_DEFAULT_OPUS_MODEL !== after.ANTHROPIC_DEFAULT_SONNET_MODEL,
     `${after.ANTHROPIC_DEFAULT_OPUS_MODEL} vs ${after.ANTHROPIC_DEFAULT_SONNET_MODEL}`);
+  check('fable is migrated to its distinct picker name',
+    after.ANTHROPIC_DEFAULT_FABLE_MODEL === 'mmclaude-m3-fable-thinking', after.ANTHROPIC_DEFAULT_FABLE_MODEL);
   // The custom-model entry is gone entirely — it duplicated a menu that already lists every
   // tier. A stale one left behind by an older reroute is not this function's to delete, but it
   // must not be re-added either.

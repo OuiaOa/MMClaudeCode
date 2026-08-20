@@ -51,9 +51,9 @@
   "burnRate": {"windowMinutes": 15},
   "limits": {"maxOutputTokens": 384000, "maxRequestBytes": 67108864},
   "desktop": {
-    "_comment": "Claude-looking logical tiers all resolve to MiniMax-M3; the displayed names describe the tier, not a different upstream model.",
+    "_comment": "Claude-looking logical tiers resolve to the configured MiniMax profile for that tier. Opus and Fable both use M3 thinking but keep distinct local names so Claude Code shows both tiers; background profiles are not exposed as picker entries.",
     "tierModelIds": {"opus": "claude-opus-mm3", "sonnet": "claude-sonnet-mm3", "fable": "claude-fable-mm3", "haiku": "claude-haiku-mm3"},
-    "tierProfiles": {"opus": "mmclaude-m3-thinking", "fable": "mmclaude-m3-thinking", "sonnet": "mmclaude-m2.7-thinking", "haiku": "mmclaude-m2.7-highspeed-thinking"}
+    "tierProfiles": {"opus": "mmclaude-m3-thinking", "fable": "mmclaude-m3-fable-thinking", "sonnet": "mmclaude-m2.7-thinking", "haiku": "mmclaude-m2.7-highspeed-thinking"}
   },
   "temporal": {"enabled": true, "timezone": ""},
   "_timezoneNote": "Empty means the host's own zone via Intl.",
@@ -64,8 +64,7 @@
     "_comment": "M3 uses disabled/adaptive thinking; M2.x profiles are explicitly thinking-enabled. The local profile names keep Claude Code's tier routing stable.",
     "mmclaude-m3-default": {"model": "MiniMax-M3", "effort": "none", "slot": "main"},
     "mmclaude-m3-thinking": {"model": "MiniMax-M3", "effort": "high", "slot": "main"},
-    "mmclaude-m3-max": {"model": "MiniMax-M3", "effort": "max", "slot": "main"},
-    "mmclaude-m3-subagent": {"model": "MiniMax-M3", "effort": "high", "slot": "subagent"},
+    "mmclaude-m3-fable-thinking": {"model": "MiniMax-M3", "effort": "high", "slot": "main"},
     "mmclaude-m2.7-thinking": {"model": "MiniMax-M2.7", "effort": "high", "slot": "main"},
     "mmclaude-m2.7-highspeed-thinking": {"model": "MiniMax-M2.7-highspeed", "effort": "high", "slot": "main"},
     "mmclaude-m2.5-background": {"model": "MiniMax-M2.5", "fallbackModel": "MiniMax-M2.7-highspeed", "effort": "high", "slot": "background"}

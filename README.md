@@ -98,6 +98,11 @@ Claude Code is pointed at a local shim on `127.0.0.1:8788` rather than at Anthro
 - **routes by Claude tier.** Default uses M3 non-thinking; Fable and Opus use M3 thinking;
   Sonnet uses M2.7 thinking; Haiku uses M2.7-highspeed thinking; background work uses M2.5
   thinking when the account exposes it, otherwise M2.7-highspeed.
+- **keeps the model picker clean.** Claude Code's built-in Default row is the only default;
+  the visible custom rows are Opus (`mmclaude-m3-thinking`), Fable
+  (`mmclaude-m3-fable-thinking`), Sonnet (`mmclaude-m2.7-thinking`) and Haiku
+  (`mmclaude-m2.7-highspeed-thinking`). Background and subagent profiles are internal and no
+  extra custom-model row is registered.
 - **passes multimodal input natively.** M3 image and video blocks are forwarded directly, so
   there is no vision sidecar, image-description cache, or second provider to configure.
 - **keeps a token ledger.** Each request records input, output and total tokens by tier and
