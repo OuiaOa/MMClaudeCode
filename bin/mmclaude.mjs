@@ -381,6 +381,7 @@ ${bold('mmclaude')} — Claude Code driven by MiniMax M3 (native multimodal)
 
 ${bold('SETUP')}
   mmclaude setup                  first-time setup: key, probe, profile, autostart
+  mmclaude update [options]       update the shim without launching Claude
   mmclaude key <provider>         store a key (${Object.keys(PROVIDERS).join(', ')})
 
 ${bold('USE')}
@@ -405,7 +406,7 @@ and never reads your Anthropic credentials.
 `);
 }
 
-const KNOWN_COMMANDS = ['key', 'start', 'stop', 'status', 'run', 'cap', 'import', 'setup', 'help', 'web', 'capabilities'];
+const KNOWN_COMMANDS = ['key', 'start', 'stop', 'status', 'run', 'cap', 'import', 'setup', 'update', 'help', 'web', 'capabilities'];
 const HELP_FLAGS = ['help', '--help', '-h', '-help'];
 const [rawCmd, ...rawRest] = process.argv.slice(2);
 // Bare `mmclaude` (no subcommand), or any first token that isn't one of mmclaude's OWN literal
@@ -443,6 +444,13 @@ switch (cmd) {
     autoUpdateCheck();
     spawnSync(process.execPath, [path.join(ROOT, 'bin', 'mmclaude-setup.mjs'), ...rest], { stdio: 'inherit' });
     break;
+  case 'update': {
+    const updater = path.join(DATA_DIR, 'bin', 'mmclaude-update.mjs');
+    if (!fs.existsSync(updater)) die('Updater missing. Reinstall MMClaude or run the installer again.');
+    const r = spawnSync(process.execPath, [updater, ...rest], { stdio: 'inherit' });
+    process.exit(r.status ?? 1);
+    break;
+  }
   case 'help': case '--help': case '-h': case '-help':
     help(rest[0]); break;
   default:
