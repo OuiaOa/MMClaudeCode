@@ -260,9 +260,11 @@ if (!fs.existsSync(sPath)) {
       delete live.env.ANTHROPIC_MODEL;
       added.push('ANTHROPIC_MODEL (restored Claude Default)');
     }
-    if (ownProfile(live.env?.ANTHROPIC_CUSTOM_MODEL_OPTION) || live.env?.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME === 'MiniMax M3') {
-      delete live.env.ANTHROPIC_CUSTOM_MODEL_OPTION;
-      delete live.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME;
+    if (['ANTHROPIC_CUSTOM_MODEL_OPTION', 'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME', 'ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION']
+        .some(k => k in (live.env || {}))) {
+      for (const key of ['ANTHROPIC_CUSTOM_MODEL_OPTION', 'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME', 'ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION']) {
+        delete live.env[key];
+      }
       added.push('custom model option (removed duplicate)');
     }
     // Refresh model sentinels that belong to MMClaude itself when a new release changes the
