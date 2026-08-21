@@ -7,7 +7,7 @@ import net from 'node:net';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mmclaude-port-'));
 const registry = path.join(root, 'registry.json');
 process.env.CODEX_SHIM_PORT_REGISTRY = registry;
-const { choosePort, configuredPort } = await import('./bin/mmclaude-port-manager.mjs');
+const { choosePort, configuredPort, syncLoopbackProfile } = await import('./bin/mmclaude-port-manager.mjs');
 
 const sibling = path.join(root, 'sibling');
 const configDir = path.join(root, 'mmclaude-config');
@@ -19,6 +19,16 @@ const first = await choosePort({ app: 'mmclaude-test', configDir, dataDir, confi
 assert.equal(first.preferredPort, 45000);
 assert.equal(first.port, 45001, 'an installed sibling config reserves the preferred port');
 assert.equal(configuredPort({ envVar: 'MMCLAUDE_TEST_PORT', app: 'mmclaude-test', dataDir, configPort: 45000 }), 45001);
+
+const settingsPath = path.join(root, 'profile', 'settings.json');
+fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+fs.writeFileSync(settingsPath, JSON.stringify({ env: {
+  ANTHROPIC_BASE_URL: 'http://127.0.0.1:45000',
+  ANTHROPIC_AUTH_TOKEN: 'sentinel',
+} }));
+assert.equal(syncLoopbackProfile(settingsPath, first.port), true);
+assert.equal(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:45001');
+assert.equal(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).env.ANTHROPIC_AUTH_TOKEN, 'sentinel');
 
 const listener = net.createServer();
 await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(45001, '127.0.0.1', resolve); });

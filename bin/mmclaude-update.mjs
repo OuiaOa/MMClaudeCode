@@ -22,7 +22,7 @@
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 
 // MMClaudeCode is the MiniMax derivative repository maintained by this install.
 // Installs that predate the rename keep working regardless: GitHub permanently redirects the
@@ -214,6 +214,17 @@ function mergeConfig() {
  */
 function syncClaudeProfile() {
   const profile = process.env.MMCLAUDE_PROFILE_DIR || join(homedir(), '.mmclaude');
+  // `setup` is the only command allowed to migrate/scrub the standard Claude installation.
+  // An update must never rewrite ~/.claude (and must never make it disappear as a side effect
+  // of keeping the shim profile current), even if an old environment variable points there.
+  const standardProfile = join(homedir(), '.claude');
+  const sameProfile = process.platform === 'win32'
+    ? resolve(profile).toLowerCase() === resolve(standardProfile).toLowerCase()
+    : resolve(profile) === resolve(standardProfile);
+  if (sameProfile) {
+    warn(`refusing to modify the standard Claude profile during update: ${profile}`);
+    return;
+  }
   const settingsPath = join(profile, 'settings.json');
   const desired = {
     ANTHROPIC_DEFAULT_OPUS_MODEL: 'mmclaude-m3-thinking',
